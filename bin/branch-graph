@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""branch-graph: draw a branch's diff as a before/after module diagram.
+
+Composition root: parse arguments, wire the git source, the language registry and the renderer, call the use case,
+write page.html + page.mmd, print one summary line then one line per new import edge.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+from branch_graph import languages, render  # noqa: E402
+from branch_graph.domain import parse_rules, verdict  # noqa: E402
+from branch_graph.git_source import GitSource  # noqa: E402
+from branch_graph.use_case import branch_graph  # noqa: E402
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(prog="branch-graph", description=__doc__.splitlines()[0])
+    p.add_argument("--repo", default=".")
+    p.add_argument("--base", help="default: git merge-base origin/main HEAD")
+    p.add_argument("--head", default="HEAD")
+    p.add_argument("--root", required=True, help="import root inside the repo, e.g. agent or scripts")
+    p.add_argument("--depth", type=int, default=2, help="module path segments per node")
+    p.add_argument("--rules", type=Path, help="markdown file holding an ```import-rules block")
+    p.add_argument("--notes", type=Path, help='JSON {"A -> B": "why"} for the new edges')
+    p.add_argument("--out", type=Path, required=True, help="page.html; page.mmd is written beside it")
+    args = p.parse_args(argv)
+
+    source = GitSource(args.repo)
+    base = args.base or source.merge_base("origin/main", args.head)
+    bd = branch_graph(source, languages.selector(languages.load()), base, args.head, args.root, args.depth)
+
+    rules = parse_rules(args.rules.read_text()) if args.rules else None
+    notes = json.loads(args.notes.read_text()) if args.notes else {}
+    verdicts = {e.key: verdict(e, rules) for e in bd.edges_added}
+
+    shown, rest = render.drawn(bd)
+    files_of = {}
+    for path, module in {**bd.base.files, **bd.head.files}.items():
+        files_of.setdefault(module, []).append(path)
+    changed_files = set(bd.numstat)
+    hunks = {m: source.hunks(base, args.head, sorted(set(files_of.get(m, [])) & changed_files)) for m in shown}
+
+    mmd = render.mermaid(bd, verdicts, shown, rest)
+    title = f"{Path(source.repo).name} {source.short(args.head)} branch graph"
+    subtitle = f"{source.short(base)} → {source.short(args.head)}  ·  root {args.root}  ·  depth {args.depth}"
+    args.out.write_text(render.page(bd, title, subtitle, mmd, verdicts, notes, hunks, shown, rest))
+    args.out.with_suffix(".mmd").write_text(mmd)
+
+    print(render.summary(bd, verdicts))
+    for e in bd.edges_added:
+        print(f"{e.key}  {e.file}:{e.line}  {verdicts[e.key]}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
