@@ -19,7 +19,7 @@ class PythonModule:
     def claims(self, path: str) -> bool:
         return path.endswith(".py")
 
-    def module_of(self, path: str, root: str) -> ModuleId | None:
+    def module_of(self, path: str, root: str, source: str = "") -> ModuleId | None:
         rel = PurePosixPath(path).relative_to(root) if root not in ("", ".") else PurePosixPath(path)
         parts = rel.with_suffix("").parts
         return parts[:-1] if parts[-1] == "__init__" else parts

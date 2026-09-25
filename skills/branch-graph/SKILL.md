@@ -5,9 +5,9 @@ description: Use when a branch or pull request is opened, or when someone asks f
 
 # branch-graph
 
-Draws a branch's diff at module level: modules added (green), removed (red, dashed) and changed (`+N −M` lines), import edges added (thick) and removed (dashed), and drift (orange) where an `import-rules` block exists and no rule allows a new edge. Each module links to its own `git diff` hunks on the page. It reads both revisions with `git ls-tree` and `git show`, so nothing is checked out.
+Draws a branch's diff at module level: modules added (green), removed (red, dashed) and changed (`+N −M` lines), import edges added (thick) and removed (dashed), and drift (orange) where an `import-rules` block exists and no rule allows a new edge. Each module links to its own `git diff` hunks on the page. It reads both revisions with `git ls-tree` and `git cat-file`, so nothing is checked out.
 
-The tool is `bin/branch-graph` two levels above this skill's base directory. Languages are modules in `lib/branch_graph/languages/`; Python ships today.
+The tool is `bin/branch-graph` two levels above this skill's base directory. Languages are modules in `lib/branch_graph/languages/`; Python and PHP ship.
 
 ## Steps
 
@@ -20,6 +20,7 @@ The tool is `bin/branch-graph` two levels above this skill's base directory. Lan
    - `--base` defaults to `git merge-base origin/main HEAD`, and `--head` to `HEAD`. For a merged PR, pass `--base <merge>^1 --head <merge>^2`.
    - `--root` is the directory imports are resolved from (`agent` in the OpenEMR fork, `scripts` in chief-of-stuff).
    - `--depth` is how many module segments make one box: 2 for a packaged tree, 1 for a flat one.
+   - PHP: a file is named by its `namespace` plus filename, or by its path under `--root` when it declares none. So `--root .` shows legacy code using namespaced code, and `--depth 2` gives vendor + package (`OpenEMR.Common`). Mermaid draws at most 500 edges: on the OpenEMR fork `--root .` draws 272 boxes and 561 edges and the render-check fails, while `--root src` draws 34 and 90. When the check fails, narrow `--root`. Edges are `use` statements matched exactly, not `require`/`include`, `use function`, or inline `\Fq\Names` (on the OpenEMR fork the last is +2% module edges at depth 2).
    - `--rules ARCHITECTURE.md` reads the first ```` ```import-rules ```` fence (one `A -> B` glob pair per line). With no fence, every verdict is `no rules`. Never write rules into a file to get a verdict.
 
    Stdout is one summary line (`nodes +a −r ~c edges +e −x drift=d`), then one line per new edge with the `file:line` that created it.

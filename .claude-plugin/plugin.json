@@ -1,7 +1,7 @@
 {
   "name": "branch-graph",
-  "description": "Draws a branch's diff as a before/after module import diagram, each module linked to its hunks, new imports checked against an import-rules block. Languages plug in as modules; Python ships.",
-  "version": "0.1.0",
+  "description": "Draws a branch's diff as a before/after module import diagram, each module linked to its hunks, new imports checked against an import-rules block. Languages plug in as modules; Python and PHP ship.",
+  "version": "0.2.0",
   "author": {
     "name": "Zach Gardner",
     "email": "locriani@gmail.com"

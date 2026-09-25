@@ -16,7 +16,7 @@ FAKE = '''
 class Fake:
     name = "fake"
     def claims(self, path): return path.endswith(".txt")
-    def module_of(self, path, root): return (path,)
+    def module_of(self, path, root, source=""): return (path,)
     def imports(self, path, module, source, known): return []
 
 MODULE = Fake()
@@ -28,6 +28,9 @@ class RegistryTest(unittest.TestCase):
         select = languages.selector(languages.load())
         self.assertEqual(select("app/x.py").name, "python")
         self.assertIsNone(select("notes.txt"))
+
+    def test_php_ships(self):
+        self.assertEqual(languages.selector(languages.load())("src/X.php").name, "php")
 
     def test_dropped_in_module_is_picked_up(self):
         with tempfile.TemporaryDirectory() as tmp:

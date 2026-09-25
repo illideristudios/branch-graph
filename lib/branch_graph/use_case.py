@@ -12,10 +12,11 @@ Selector = Callable[[str], "LanguageModule | None"]
 
 def build_graph(source: RevisionSource, select: Selector, rev: str, root: str) -> Graph:
     owners = {path: lang for path in source.files(rev, root) if (lang := select(path))}
-    graph = Graph(files={path: m for path, lang in owners.items() if (m := lang.module_of(path, root))})
+    text = source.read_all(rev, list(owners))
+    graph = Graph(files={path: m for path, lang in owners.items() if (m := lang.module_of(path, root, text[path]))})
     known = graph.nodes
     for path, module in graph.files.items():
-        for dst, line in owners[path].imports(path, module, source.read(rev, path), known):
+        for dst, line in owners[path].imports(path, module, text[path], known):
             graph.add(Edge(module, dst, path, line))
     return graph
 

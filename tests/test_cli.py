@@ -69,5 +69,31 @@ class CliTest(unittest.TestCase):
         self.assertIn("c reads a&#x27;s settings", self.out.read_text())
 
 
+class PhpCliTest(unittest.TestCase):
+    """Namespaced files are named by namespace, legacy ones by path, and a `use` links them; a .py file rides along."""
+
+    def test_legacy_file_using_namespaced_ones(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp, "repo")
+            (repo / "src").mkdir(parents=True)
+            (repo / "legacy").mkdir()
+            git(repo, "init", "-q", "-b", "main")
+            commit(repo, {
+                "src/Db.php": "<?php\nnamespace App;\n\nclass Db {}\n",
+                "src/Web.php": "<?php\nnamespace App;\nuse App\\Db;\n\nclass Web {}\n",
+                "tool.py": "import os\n",
+            }, "base")
+            git(repo, "tag", "base")
+            commit(repo, {
+                "src/Db.php": "<?php\nnamespace App;\n\nclass Db { const X = 1; }\n",
+                "legacy/page.php": "<?php\nuse App\\Web;\nuse App\\Db;\nuse Symfony\\Yaml\\Yaml;\n",
+            }, "head")
+            out = Path(tmp, "page.html")
+            argv = [sys.executable, str(BIN), "--repo", str(repo), "--base", "base", "--root", ".", "--out", str(out)]
+            lines = subprocess.run(argv, capture_output=True, text=True, check=True).stdout.splitlines()
+            self.assertEqual(lines[0], "nodes +1 −0 ~1 edges +2 −0 drift=0")
+            self.assertEqual(sorted(lines[1:]), ["legacy.page -> App.Db  legacy/page.php:3  no rules", "legacy.page -> App.Web  legacy/page.php:2  no rules"])
+
+
 if __name__ == "__main__":
     unittest.main()
