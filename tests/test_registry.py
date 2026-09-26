@@ -32,6 +32,9 @@ class RegistryTest(unittest.TestCase):
     def test_php_ships(self):
         self.assertEqual(languages.selector(languages.load())("src/X.php").name, "php")
 
+    def test_swift_ships(self):
+        self.assertEqual(languages.selector(languages.load())("Sources/App/X.swift").name, "swift")
+
     def test_dropped_in_module_is_picked_up(self):
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "fake.py").write_text(FAKE)

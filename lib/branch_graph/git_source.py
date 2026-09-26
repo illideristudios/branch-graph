@@ -11,7 +11,9 @@ class GitSource:
         self.repo = self._git("rev-parse", "--show-toplevel").strip()
 
     def _git(self, *args: str) -> str:
-        return subprocess.run(["git", "-C", self.repo, *args], check=True, capture_output=True, text=True, errors="replace").stdout
+        """`core.quotePath=false` keeps non-ASCII names readable in diff headers; path lists use `-z` besides."""
+        return subprocess.run(["git", "-C", self.repo, "-c", "core.quotePath=false", *args], check=True, capture_output=True, text=True,
+                              errors="replace").stdout
 
     def merge_base(self, a: str, b: str) -> str:
         return self._git("merge-base", a, b).strip()
@@ -20,7 +22,7 @@ class GitSource:
         return self._git("rev-parse", "--short", rev).strip()
 
     def files(self, rev: str, root: str) -> list[str]:
-        return self._git("ls-tree", "-r", "--name-only", rev, "--", root).splitlines()
+        return [p for p in self._git("ls-tree", "-r", "-z", "--name-only", rev, "--", root).split("\0") if p]
 
     def read_all(self, rev: str, paths: list[str]) -> dict[str, str]:
         """One `git cat-file --batch` for all of them: a `git show` each costs ~17 ms, which is minutes on a PHP tree.
@@ -43,8 +45,8 @@ class GitSource:
 
     def numstat(self, base: str, head: str, root: str) -> dict[str, tuple[int, int]]:
         out = {}
-        for line in self._git("diff", "--no-renames", "--numstat", base, head, "--", root).splitlines():
-            plus, minus, path = line.split("\t", 2)
+        for record in filter(None, self._git("diff", "--no-renames", "--numstat", "-z", base, head, "--", root).split("\0")):
+            plus, minus, path = record.split("\t", 2)
             out[path] = (int(plus) if plus != "-" else 0, int(minus) if minus != "-" else 0)
         return out
 

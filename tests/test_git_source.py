@@ -25,5 +25,19 @@ class ReadAllTest(unittest.TestCase):
             self.assertEqual(GitSource(tmp).read_all("HEAD", []), {})
 
 
+class NonAsciiPathTest(unittest.TestCase):
+    """git quotes a non-ASCII path unless asked not to; a quoted path is a file the graph silently loses."""
+
+    def test_files_and_numstat_keep_the_real_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            git(tmp, "init", "-q", "-b", "main")
+            commit(tmp, {"a.py": "x = 1\n"}, "base")
+            commit(tmp, {"é.py": "import a\n", "b c.py": "y = 2\n"}, "head")
+            source = GitSource(tmp)
+            self.assertEqual(sorted(source.files("HEAD", ".")), ["a.py", "b c.py", "é.py"])
+            self.assertEqual(source.numstat("HEAD~1", "HEAD", "."), {"b c.py": (1, 0), "é.py": (1, 0)})
+            self.assertIn("diff --git a/é.py b/é.py", source.hunks("HEAD~1", "HEAD", ["é.py"]))
+
+
 if __name__ == "__main__":
     unittest.main()
