@@ -82,6 +82,18 @@ def diff(base: Graph, head: Graph, numstat: dict[str, tuple[int, int]]) -> Branc
     )
 
 
+
+def exclude(bd: BranchDiff, globs: list[str]) -> tuple[BranchDiff, int]:
+    """Drop modules whose name matches a glob, with every edge and numstat row touching them. Also how many went."""
+    gone = {m for m in bd.base.nodes | bd.head.nodes if any(fnmatch.fnmatchcase(name(m), g) for g in globs)}
+
+    def keep(g: Graph) -> Graph:
+        return Graph(files={p: m for p, m in g.files.items() if m not in gone},
+                     edges={k: e for k, e in g.edges.items() if e.src not in gone and e.dst not in gone})
+
+    numstat = {p: s for p, s in bd.numstat.items() if (bd.head.files.get(p) or bd.base.files.get(p)) not in gone}
+    return diff(keep(bd.base), keep(bd.head), numstat), len(gone)
+
 Rules = list[tuple[str, str]]
 RULES_BLOCK = re.compile(r"^```import-rules[ \t]*\n(.*?)^```", re.M | re.S)
 

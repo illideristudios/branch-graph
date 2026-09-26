@@ -54,6 +54,34 @@ class DiffTest(unittest.TestCase):
         self.assertEqual([(e.src, e.dst, e.file, e.line) for e in self.bd.edges_removed], [(B, C, "app/b.py", 4)])
 
 
+class ExcludeTest(unittest.TestCase):
+    """fnmatch globs on the collapsed name; an excluded module and every edge touching it leave both revisions."""
+
+    def setUp(self):
+        self.base = graph([(A, B, "app/a/x.py", 1), (B, C, "app/b.py", 4)], {"app/a/x.py": A, "app/b.py": B, "app/c/y.py": C})
+        head_files = {"app/a/x.py": A, "app/b.py": B, "app/n.py": ("app", "n")}
+        self.head = graph([(A, B, "app/a/x.py", 1), (("app", "n"), A, "app/n.py", 2)], head_files)
+        self.bd = d.diff(self.base, self.head, {"app/b.py": (5, 2), "app/n.py": (9, 0), "app/c/y.py": (0, 7)})
+
+    def test_excluded_modules_and_their_edges_are_gone(self):
+        bd, n = d.exclude(self.bd, ["app.n", "app.c.*"])
+        self.assertEqual(n, 2)
+        self.assertEqual((bd.added, bd.removed, bd.changed), (set(), set(), {B: (5, 2)}))
+        self.assertEqual((bd.edges_added, bd.edges_removed), ([], []))
+        self.assertEqual(bd.base.nodes | bd.head.nodes, {A, B})
+        self.assertEqual(set(bd.base.edges) | set(bd.head.edges), {(A, B)})
+
+    def test_a_module_counts_once_whichever_revisions_hold_it(self):
+        self.assertEqual(d.exclude(self.bd, ["app.*"])[1], 4)
+
+    def test_no_globs_or_no_match_changes_nothing(self):
+        for globs in ([], ["tests.*"]):
+            bd, n = d.exclude(self.bd, globs)
+            self.assertEqual(n, 0)
+            self.assertEqual((bd.added, bd.removed, bd.changed), (self.bd.added, self.bd.removed, self.bd.changed))
+            self.assertEqual((bd.edges_added, bd.edges_removed), (self.bd.edges_added, self.bd.edges_removed))
+
+
 class RulesTest(unittest.TestCase):
     edge_ca = d.Edge(("c",), ("a",), "c.py", 1)
     edge_cb = d.Edge(("c",), ("b",), "c.py", 2)

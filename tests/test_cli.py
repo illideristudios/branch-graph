@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from html import escape
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -127,6 +128,70 @@ class CliTest(unittest.TestCase):
         page = self.out.read_text()
         self.assertIn("c reads a&#x27;s settings", page)
         self.assertRegex(page, r"#graph svg #L_n\d+_n\d+_\d+ \{ stroke: var\(--drift\) !important; \}")
+
+
+class ExcludeAndViewsCliTest(unittest.TestCase):
+    """Test modules fan into the branch; `--exclude` drops them and `--max-nodes` splits the rest into page-K.mmd views."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.tmp.name, "repo")
+        (self.repo / "tests").mkdir(parents=True)
+        git(self.repo, "init", "-q", "-b", "main")
+        commit(self.repo, {"a.py": "import b\n", "b.py": "X = 1\n", "tests/test_a.py": "import a\n", "tests/test_b.py": "import b\n"}, "base")
+        git(self.repo, "tag", "base")
+        commit(self.repo, {"c.py": "import a\nimport b\n", "b.py": "X = 2\n", "tests/test_c.py": "import c\n",
+                           "x.py": "import y\n", "y.py": "Y = 1\n"}, "head")
+        self.out = Path(self.tmp.name, "page.html")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_cli(self, *extra):
+        argv = [sys.executable, str(BIN), "--repo", str(self.repo), "--base", "base", "--root", ".", "--out", str(self.out), *extra]
+        return subprocess.run(argv, capture_output=True, text=True, check=True).stdout.splitlines()
+
+    def views(self):
+        return sorted(self.out.parent.glob("page-*.mmd"), key=lambda p: int(p.stem.split("-")[1]))
+
+    def test_without_the_flags_output_is_unchanged(self):
+        lines = self.run_cli()
+        self.assertEqual(lines[0], "nodes +4 −0 ~1 edges +4 −0 drift=0")
+        self.assertIn("tests.test_c -> c  tests/test_c.py:1  no rules", lines)
+        self.assertTrue(self.out.with_suffix(".mmd").exists())
+        self.assertEqual(self.views(), [])
+
+    def test_exclude_is_repeatable_and_counted(self):
+        lines = self.run_cli("--exclude", "tests.*", "--exclude", "y")
+        self.assertEqual(lines[0], "nodes +2 −0 ~1 edges +2 −0 drift=0 excluded=4")
+        self.assertEqual(sorted(lines[1:]), ["c -> a  c.py:1  no rules", "c -> b  c.py:2  no rules"])
+        page, mmd = self.out.read_text(), self.out.with_suffix(".mmd").read_text()
+        self.assertNotIn("tests.", mmd)
+        self.assertNotIn("test_c", page)
+        self.assertRegex(page, r"\b4 (?:modules? )?excluded\b")
+
+    def test_views_replace_page_mmd(self):
+        lines = self.run_cli("--exclude", "tests.*", "--max-nodes", "5")
+        self.assertEqual(lines[0], "nodes +3 −0 ~1 edges +3 −0 drift=0 excluded=3 views=2")
+        self.assertEqual(sorted(lines[1:]), ["c -> a  c.py:1  no rules", "c -> b  c.py:2  no rules", "x -> y  x.py:1  no rules"])
+        self.assertFalse(self.out.with_suffix(".mmd").exists())
+        views = self.views()
+        self.assertEqual([p.name for p in views], ["page-1.mmd", "page-2.mmd"])
+        page = self.out.read_text()
+        self.assertRegex(page, r"\b3 (?:modules? )?excluded\b")
+        at = -1
+        for view in views:
+            mmd = view.read_text()
+            first = mmd.splitlines()[0]
+            self.assertRegex(first, r"^%% view: \S+( and \d+ more)?$")
+            self.assertNotIn("tests.", mmd)
+            clicks = re.findall(r'^\s+click \S+ href "#([\w-]+)"', mmd, re.M)
+            self.assertLessEqual(len(clicks), 5)
+            for anchor in clicks:
+                self.assertIn(f'id="{anchor}"', page)
+            title = first.removeprefix("%% view: ")
+            self.assertGreater(page.find(escape(title), at + 1), at, f"{title} out of order")
+            at = page.find(escape(title), at + 1)
 
 
 class PhpCliTest(unittest.TestCase):

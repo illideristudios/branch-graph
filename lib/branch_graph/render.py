@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections import Counter
+from dataclasses import dataclass
 from html import escape
 
 from .domain import BranchDiff, Edge, ModuleId, name
@@ -46,9 +48,10 @@ def _vars(tokens: dict[str, str]) -> str:
     return " ".join(f"--{k}: {v};" for k, v in tokens.items())
 
 
-def summary(bd: BranchDiff, verdicts: dict[str, str]) -> str:
+def summary(bd: BranchDiff, verdicts: dict[str, str], excluded: int | None = None, views: int | None = None) -> str:
     drift = sum(v == "drift" for v in verdicts.values())
-    return f"nodes +{len(bd.added)} −{len(bd.removed)} ~{len(bd.changed)} edges +{len(bd.edges_added)} −{len(bd.edges_removed)} drift={drift}"
+    line = f"nodes +{len(bd.added)} −{len(bd.removed)} ~{len(bd.changed)} edges +{len(bd.edges_added)} −{len(bd.edges_removed)} drift={drift}"
+    return line + (f" excluded={excluded}" if excluded is not None else "") + (f" views={views}" if views is not None else "")
 
 
 def touched(bd: BranchDiff) -> set[ModuleId]:
@@ -58,21 +61,81 @@ def touched(bd: BranchDiff) -> set[ModuleId]:
     return out
 
 
+def _grow(bd: BranchDiff, inside: list[ModuleId], cap: float = math.inf, budget: int = EDGE_BUDGET) -> list[ModuleId]:
+    """`inside` (touched modules), then untouched modules one hop from them, most-connected first, while the drawn edges
+    fit `budget` and the modules fit `cap`."""
+    hot, have = touched(bd), set(inside)
+    edges = set(bd.base.edges) | set(bd.head.edges)
+    ties = Counter(b if a in have else a for a, b in edges if (a in have) != (b in have))
+    used = sum(a in have and b in have for a, b in edges)
+    out = list(inside)
+    for module, n in sorted(ties.items(), key=lambda kv: (-kv[1], kv[0])):
+        if module in hot:
+            continue
+        if used + n > budget or len(out) >= cap:
+            break
+        out.append(module)
+        used += n
+    return out
+
+
 def drawn(bd: BranchDiff, budget: int = EDGE_BUDGET) -> tuple[list[ModuleId], int]:
     """The touched nodes, then modules one hop from them, most-connected first, while the drawn edges fit `budget`.
     Also the count of modules left out."""
+    everything = bd.base.nodes | bd.head.nodes
+    shown = _grow(bd, sorted(touched(bd) & everything), budget=budget)
+    return sorted(shown), len(everything) - len(shown)
+
+
+@dataclass
+class View:
+    title: str
+    touched: list[ModuleId]
+    shown: list[ModuleId]
+    rest: int
+    elsewhere: dict[ModuleId, int]
+
+
+def views(bd: BranchDiff, max_nodes: int) -> list[View]:
+    """The touched modules split into views of at most `max_nodes` drawn modules. A group grows through its own touched
+    neighbours while the group plus every touched neighbour fits, and those neighbours are drawn as context, so an edge
+    between two touched modules is drawn in the view of either end. Untouched context fills what is left."""
+    if max_nodes < 3:
+        raise ValueError(f"--max-nodes must be at least 3, got {max_nodes}")
     hot = touched(bd)
     everything = bd.base.nodes | bd.head.nodes
-    edges = set(bd.base.edges) | set(bd.head.edges)
-    ties = Counter(b if a in hot else a for a, b in edges if (a in hot) != (b in hot))
-    used = sum(a in hot and b in hot for a, b in edges)
-    shown = hot & everything
-    for module, n in sorted(ties.items(), key=lambda kv: (-kv[1], kv[0])):
-        if used + n > budget:
-            break
-        shown.add(module)
-        used += n
-    return sorted(shown), len(everything) - len(shown)
+    near: dict[ModuleId, set[ModuleId]] = {m: set() for m in hot}
+    for a, b in set(bd.base.edges) | set(bd.head.edges):
+        if a in hot and b in hot:
+            near[a].add(b)
+            near[b].add(a)
+    reach = lambda group: set(group).union(*(near[m] for m in group))  # noqa: E731
+    # ponytail: greedy, recomputing reach per candidate (quadratic in a group's size); not a minimum number of views.
+    free, groups = set(hot), []
+    for seed in sorted(hot):
+        if seed not in free:
+            continue
+        group, grew = [seed], True
+        free.discard(seed)
+        while grew:
+            grew = False
+            for m in sorted(reach(group) & free):
+                if len(reach(group + [m])) <= max_nodes:
+                    group.append(m)
+                    free.discard(m)
+                    grew = True
+        groups.append(group)
+    home = {m: k for k, group in enumerate(groups, 1) for m in group}
+    out = []
+    for group in groups:
+        # Only a lone module can overflow; it keeps its best-connected touched neighbours, the likeliest to overflow too.
+        # ponytail: two adjacent overflowing modules can still drop each other's edge (the test starts at N=5 for that).
+        visitors = sorted(reach(group) - set(group), key=lambda m: (-len(near[m]), m))[: max_nodes - len(group)]
+        shown = _grow(bd, group + visitors, cap=max_nodes)
+        more = len(group) - 1
+        title = name(group[0]) + (f" and {more} more" if more else "")
+        out.append(View(title, group, shown, len(everything - hot - set(shown)), {m: home[m] for m in visitors}))
+    return out
 
 
 def edges(bd: BranchDiff) -> list[tuple[Edge, str]]:
@@ -92,11 +155,19 @@ PILL = {"new": ' <span class="pill added">new</span>', "removed": ' <span class=
 NO_CHANGES = '<p class="muted pad">No changes in this module.</p>'
 
 
-def mermaid(bd: BranchDiff, verdicts: dict[str, str], shown: list[ModuleId], rest: int) -> str:
-    ids = {m: f"n{i}" for i, m in enumerate(shown)}
+def _ids(bd: BranchDiff) -> dict[ModuleId, int]:
+    """One number per module of either revision, so every view and the page agree on `n<i>` and `#n-<i>`."""
+    return {m: i for i, m in enumerate(sorted(bd.base.nodes | bd.head.nodes))}
+
+
+def mermaid(bd: BranchDiff, verdicts: dict[str, str], shown: list[ModuleId], rest: int, elsewhere: dict[ModuleId, int] | None = None) -> str:
+    every = _ids(bd)
+    ids = {m: f"n{every[m]}" for m in shown}
+    elsewhere = elsewhere or {}
     lines = ["flowchart LR"]
     for m, nid in ids.items():
         label = name(m) + (f"<br/>+{bd.changed[m][0]} −{bd.changed[m][1]}" if m in bd.changed else "")
+        label += f"<br/>in view {elsewhere[m]}" if m in elsewhere else ""
         cls = ":::added" if m in bd.added else ":::removed" if m in bd.removed else ":::changed" if m in bd.changed else ""
         lines.append(f'  {nid}["{label}"]{cls}')
     if rest:
@@ -106,8 +177,8 @@ def mermaid(bd: BranchDiff, verdicts: dict[str, str], shown: list[ModuleId], res
         lines.append(f"  {ids[e.src]} {ARROW[kind]} {ids[e.dst]}")
         if kind == "new" and verdicts.get(e.key) == "drift":
             red.append(i)
-    for i, nid in enumerate(ids.values()):
-        lines.append(f'  click {nid} href "#n-{i}" _self')
+    for nid in ids.values():
+        lines.append(f'  click {nid} href "#n-{nid[1:]}" _self')
     lines += [
         # Shape only: colors come from the page's palette, by class, so they follow --colors and dark mode.
         "  classDef added stroke-width:2px",
@@ -118,6 +189,10 @@ def mermaid(bd: BranchDiff, verdicts: dict[str, str], shown: list[ModuleId], res
     if red:
         lines.append(f"  linkStyle {','.join(map(str, red))} stroke-width:3px")
     return "\n".join(lines) + "\n"
+
+
+def view_mermaid(bd: BranchDiff, verdicts: dict[str, str], view: View) -> str:
+    return f"%% view: {view.title}\n" + mermaid(bd, verdicts, view.shown, view.rest, view.elsewhere)
 
 
 def _files(text: str) -> list[tuple[str, list[str]]]:
@@ -175,9 +250,13 @@ class Anchors:
         return self.lines.get((e.file, side, e.line)) or self.paths.get(e.file) or panel
 
 
-def page(bd: BranchDiff, title: str, subtitle: str, mmd: str, verdicts: dict[str, str], notes: dict[str, str], hunks: dict[ModuleId, str],
-         shown: list[ModuleId], rest: int, colors: dict[str, dict[str, str]] | None = None) -> str:
-    ids = {m: f"n-{i}" for i, m in enumerate(shown)}
+def page(bd: BranchDiff, title: str, subtitle: str, diagrams: list[tuple[str, str, list[ModuleId]]], verdicts: dict[str, str],
+         notes: dict[str, str], hunks: dict[ModuleId, str], shown: list[ModuleId], rest: int,
+         colors: dict[str, dict[str, str]] | None = None, excluded: int | None = None) -> str:
+    """diagrams: (view title, Mermaid text, modules it draws); one untitled diagram when there are no views.
+    shown: every drawn module, one panel each."""
+    every_id = _ids(bd)
+    ids = {m: f"n-{every_id[m]}" for m in shown}
     anchors = Anchors()
     diffs = {m: anchors.diff_html(hunks.get(m, ""), bd.numstat) for m in shown}
     every = edges(bd)
@@ -214,14 +293,22 @@ def page(bd: BranchDiff, title: str, subtitle: str, mmd: str, verdicts: dict[str
         + f'</summary>{connections(m)}{diffs[m] or NO_CHANGES}</details>'
         for m in shown
     )
-    drawn_links = links(bd, shown)
-    data = {"links": [{"href": href(e, k), "title": f"{e.key}  {e.file}:{e.line}"} for e, k in drawn_links]}
-    nid = {m: f"n{i}" for i, m in enumerate(shown)}
-    drift = ", ".join(f"#graph svg #L_{nid[e.src]}_{nid[e.dst]}_{i}" for i, (e, k) in enumerate(drawn_links) if k == "new" and verdicts.get(e.key) == "drift")
+    data: dict[str, list] = {"links": []}
+    graphs, drift = [], []
+    for k, (view, mmd, drawn_here) in enumerate(diagrams, 1):
+        gid = f"graph-{k}" if view else "graph"
+        heading = f'<h3>View {k} · <span class="mono">{escape(view)}</span></h3>' if view else ""
+        graphs.append(VIEW.format(heading=heading, gid=gid, first=len(data["links"]), mmd=escape(mmd)))
+        drawn_links = links(bd, drawn_here)
+        data["links"] += [{"href": href(e, kind), "title": f"{e.key}  {e.file}:{e.line}"} for e, kind in drawn_links]
+        drift += [f"#{gid} svg #L_n{every_id[e.src]}_n{every_id[e.dst]}_{i}" for i, (e, kind) in enumerate(drawn_links)
+                  if kind == "new" and verdicts.get(e.key) == "drift"]
+    drift = ", ".join(drift)
     chips = [("added", f"+{len(bd.added)} modules"), ("removed", f"−{len(bd.removed)} modules"), ("changed", f"~{len(bd.changed)} changed"),
              ("context", f"+{len(bd.edges_added)} / −{len(bd.edges_removed)} edges"), ("drift", f"{sum(v == 'drift' for v in verdicts.values())} drift")]
+    chips += [("context", f"{excluded} excluded")] if excluded is not None else []
     return TEMPLATE.format(
-        title=escape(title), subtitle=escape(subtitle), cdn=MERMAID_CDN, mmd=escape(mmd), table=table, details=details,
+        title=escape(title), subtitle=escape(subtitle), cdn=MERMAID_CDN, graphs="\n".join(graphs), table=table, details=details,
         chips="".join(f'<span class="pill {c}">{escape(t)}</span>' for c, t in chips),
         rest=f"{rest} untouched modules not drawn." if rest else "",
         data=json.dumps(data).replace("</", "<\\/"),
@@ -229,6 +316,9 @@ def page(bd: BranchDiff, title: str, subtitle: str, mmd: str, verdicts: dict[str
         light=_vars((colors or PALETTE)["light"]), dark=_vars((colors or PALETTE)["dark"]),
     )
 
+
+VIEW = """<div class="view">{heading}<div class="scroll"><div class="graph" id="{gid}" data-first="{first}"></div></div><p class="focus" hidden></p>
+<pre class="mmd" hidden>{mmd}</pre></div>"""
 
 TEMPLATE = """<meta charset="utf-8">
 <title>{title}</title>
@@ -255,17 +345,17 @@ header {{ display: grid; gap: 10px; }}
 .pill.drift {{ color: var(--drift); background: var(--drift-bg); border-color: transparent; }}
 .pill.changed {{ color: var(--accent); border-color: var(--accent); }}
 .scroll {{ overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; }}
-#graph {{ padding: 16px; min-height: 120px; }}
-#graph svg {{ max-width: none; }}
-#graph svg .flowchart-link {{ stroke: var(--edge); }}
-#graph svg .marker {{ fill: var(--edge); stroke: var(--edge); }}
-#graph svg .node rect, #graph svg .node polygon {{ fill: var(--surface); stroke: var(--rule); }}
-#graph svg .node.added rect {{ fill: var(--add-bg); stroke: var(--add); }}
-#graph svg .node.removed rect {{ fill: var(--del-bg); stroke: var(--del); }}
-#graph svg .node.changed rect {{ fill: var(--accent-bg); stroke: var(--accent); }}
-#graph svg .node.more rect {{ fill: none; stroke: none; }}
-#graph svg .nodeLabel {{ color: var(--ink); }}
-#graph svg .node.more .nodeLabel {{ color: var(--muted); }}
+.graph {{ padding: 16px; min-height: 120px; }}
+.graph svg {{ max-width: none; }}
+.graph svg .flowchart-link {{ stroke: var(--edge); }}
+.graph svg .marker {{ fill: var(--edge); stroke: var(--edge); }}
+.graph svg .node rect, .graph svg .node polygon {{ fill: var(--surface); stroke: var(--rule); }}
+.graph svg .node.added rect {{ fill: var(--add-bg); stroke: var(--add); }}
+.graph svg .node.removed rect {{ fill: var(--del-bg); stroke: var(--del); }}
+.graph svg .node.changed rect {{ fill: var(--accent-bg); stroke: var(--accent); }}
+.graph svg .node.more rect {{ fill: none; stroke: none; }}
+.graph svg .nodeLabel {{ color: var(--ink); }}
+.graph svg .node.more .nodeLabel {{ color: var(--muted); }}
 {drift}
 table {{ border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }}
 th, td {{ text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }}
@@ -292,15 +382,17 @@ pre.diff .del {{ color: var(--del); background: var(--del-bg); }}
 pre.diff .hdr {{ color: var(--hdr); padding-left: 11ch; margin-top: 6px; }}
 pre.diff .meta {{ color: var(--muted); padding-left: 11ch; }}
 .flash {{ outline: 2px solid var(--accent); outline-offset: -2px; }}
+.view + .view {{ margin-top: 20px; }}
+.view h3 {{ font-size: .9rem; font-weight: 600; margin: 0 0 6px; }}
 .legend {{ font-size: .85rem; color: var(--muted); margin: 8px 0 0; }}
-#focus {{ margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }}
-#focus[hidden] {{ display: none; }}
-#focus button {{ font: inherit; font-size: .85rem; color: var(--muted); background: none; border: 1px solid var(--rule); border-radius: 999px; padding: 0 10px; cursor: pointer; }}
-#graph .focusing .flowchart-link:not(.hl) {{ opacity: .1; }}
-#graph .focusing .node:not(.hl) {{ opacity: .3; }}
-#graph .flowchart-link.hl {{ stroke-width: 3px !important; }}
-#graph .hit {{ stroke: transparent !important; stroke-width: 14px !important; fill: none; pointer-events: stroke; cursor: pointer; }}
-#graph .node {{ cursor: pointer; }}
+.focus {{ margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }}
+.focus[hidden] {{ display: none; }}
+.focus button {{ font: inherit; font-size: .85rem; color: var(--muted); background: none; border: 1px solid var(--rule); border-radius: 999px; padding: 0 10px; cursor: pointer; }}
+.graph .focusing .flowchart-link:not(.hl) {{ opacity: .1; }}
+.graph .focusing .node:not(.hl) {{ opacity: .3; }}
+.graph .flowchart-link.hl {{ stroke-width: 3px !important; }}
+.graph .hit {{ stroke: transparent !important; stroke-width: 14px !important; fill: none; pointer-events: stroke; cursor: pointer; }}
+.graph .node {{ cursor: pointer; }}
 </style>
 <main>
   <header>
@@ -310,8 +402,7 @@ pre.diff .meta {{ color: var(--muted); padding-left: 11ch; }}
   </header>
   <section>
     <h2>Module graph</h2>
-    <div class="scroll"><div id="graph"></div></div>
-    <p id="focus" hidden></p>
+{graphs}
     <p class="legend">Green: new module. Red dashed: removed. Blue: changed, with lines +added −removed. Thick arrow: new import. Orange arrow: drift from the import rules. Dashed arrow: import removed. {rest} Click a module to highlight its imports; click an arrow to go to the line that created it.</p>
   </section>
   <section>
@@ -327,14 +418,12 @@ pre.diff .meta {{ color: var(--muted); padding-left: 11ch; }}
     </div>
   </section>
 </main>
-<pre id="mmd" hidden>{mmd}</pre>
 <script type="application/json" id="bg-data">{data}</script>
 <script src="{cdn}"></script>
 <script>
 (function () {{
   var root = document.documentElement;
   var dark = root.dataset.theme === "dark" || (root.dataset.theme !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
-  var graph = document.getElementById("graph"), bar = document.getElementById("focus");
   var data = JSON.parse(document.getElementById("bg-data").textContent);
 
   function go(id) {{
@@ -350,17 +439,14 @@ pre.diff .meta {{ color: var(--muted); padding-left: 11ch; }}
     var href = a && (a.getAttribute("href") || a.getAttribute("xlink:href"));
     if (!href || href.charAt(0) !== "#") return;
     ev.preventDefault();
-    if (graph.contains(a)) focus(href.slice(1)); else go(href.slice(1));
+    var graph = a.closest(".graph");
+    if (graph) focus(graph, href.slice(1)); else go(href.slice(1));
   }});
-  graph.addEventListener("click", function (ev) {{
-    var hit = ev.target.closest(".hit");
-    if (hit) go(data.links[+hit.dataset.link].href);
-    else if (!ev.target.closest("a")) focus(null);
-  }});
-  document.addEventListener("keydown", function (ev) {{ if (ev.key === "Escape") focus(null); }});
+  var graphs = document.querySelectorAll(".graph");
+  document.addEventListener("keydown", function (ev) {{ if (ev.key === "Escape") graphs.forEach(function (g) {{ focus(g, null); }}); }});
 
-  function focus(panel) {{
-    var svg = graph.querySelector("svg");
+  function focus(graph, panel) {{
+    var svg = graph.querySelector("svg"), bar = graph.closest(".view").querySelector(".focus");
     if (!svg) return;
     var nid = panel && "n" + panel.slice(2);
     if (!panel || svg.dataset.focus === nid) {{ svg.classList.remove("focusing"); delete svg.dataset.focus; bar.hidden = true; return; }}
@@ -383,27 +469,35 @@ pre.diff .meta {{ color: var(--muted); padding-left: 11ch; }}
     var c = document.createElement("span"); c.className = "muted"; c.textContent = "imports " + out + " · imported by " + into + " drawn";
     var l = document.createElement("a"); l.href = "#" + panel; l.textContent = "connections and diff ↓";
     var x = document.createElement("button"); x.type = "button"; x.textContent = "clear";
-    x.addEventListener("click", function () {{ focus(null); }});
+    x.addEventListener("click", function () {{ focus(graph, null); }});
     bar.append(b, c, l, x);
     bar.hidden = false;
   }}
 
-  function arm(svg) {{
+  function arm(svg, first) {{
     svg.querySelectorAll("path.flowchart-link").forEach(function (p) {{
-      var m = /_(\\d+)$/.exec(p.id), link = m && data.links[+m[1]];
+      var m = /_(\\d+)$/.exec(p.id), i = m && first + +m[1], link = m && data.links[i];
       if (!link) return;
       var hit = p.cloneNode(false);
       hit.removeAttribute("id"); hit.removeAttribute("marker-end"); hit.removeAttribute("style");
-      hit.setAttribute("class", "hit"); hit.dataset.link = m[1];
+      hit.setAttribute("class", "hit"); hit.dataset.link = i;
       var t = document.createElementNS("http://www.w3.org/2000/svg", "title"); t.textContent = link.title;
       hit.appendChild(t);
       p.parentNode.insertBefore(hit, p.nextSibling);
     }});
   }}
 
-  if (!window.mermaid) {{ graph.textContent = "Mermaid did not load; the diagram source is in the page."; return; }}
-  mermaid.initialize({{ startOnLoad: false, securityLevel: "loose", theme: dark ? "dark" : "default", flowchart: {{ htmlLabels: true }} }});
-  mermaid.render("g", document.getElementById("mmd").textContent).then(function (r) {{ graph.innerHTML = r.svg; arm(graph.querySelector("svg")); }});
+  if (window.mermaid) mermaid.initialize({{ startOnLoad: false, securityLevel: "loose", theme: dark ? "dark" : "default", flowchart: {{ htmlLabels: true }} }});
+  graphs.forEach(function (graph, k) {{
+    if (!window.mermaid) {{ graph.textContent = "Mermaid did not load; the diagram source is in the page."; return; }}
+    graph.addEventListener("click", function (ev) {{
+      var hit = ev.target.closest(".hit");
+      if (hit) go(data.links[+hit.dataset.link].href);
+      else if (!ev.target.closest("a")) focus(graph, null);
+    }});
+    var text = graph.closest(".view").querySelector(".mmd").textContent;
+    mermaid.render("g" + k, text).then(function (r) {{ graph.innerHTML = r.svg; arm(graph.querySelector("svg"), +graph.dataset.first); }});
+  }});
 }})();
 </script>
 """

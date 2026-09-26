@@ -2,7 +2,7 @@
 """branch-graph: draw a branch's diff as a before/after module diagram.
 
 Composition root: parse arguments, wire the git source, the language registry and the renderer, call the use case,
-write page.html + page.mmd, print one summary line then one line per new import edge.
+write page.html + page.mmd (or page-1.mmd… with --max-nodes), print one summary line then one line per new import edge.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 from branch_graph import languages, render  # noqa: E402
-from branch_graph.domain import parse_rules, verdict  # noqa: E402
+from branch_graph.domain import exclude, parse_rules, verdict  # noqa: E402
 from branch_graph.git_source import GitSource  # noqa: E402
 from branch_graph.use_case import branch_graph  # noqa: E402
 
@@ -30,6 +30,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--rules", type=Path, help="markdown file holding an ```import-rules block")
     p.add_argument("--notes", type=Path, help='JSON {"A -> B": "why"} for the new edges')
     p.add_argument("--colors", type=Path, help='JSON {"light": {"add": "#1f8a4c", ...}, "dark": {...}} over the default palette')
+    p.add_argument("--exclude", action="append", default=[], metavar="GLOB", help="drop modules whose name matches, e.g. 'tests.*'; repeatable")
+    p.add_argument("--max-nodes", type=int, metavar="N", help="split the drawing into views of at most N modules, page-1.mmd…")
     p.add_argument("--out", type=Path, required=True, help="page.html; page.mmd is written beside it")
     args = p.parse_args(argv)
 
@@ -41,25 +43,45 @@ def main(argv: list[str] | None = None) -> int:
     source = GitSource(args.repo)
     base = args.base or source.merge_base("origin/main", args.head)
     bd = branch_graph(source, languages.selector(languages.load()), base, args.head, args.root, args.depth)
+    excluded = None
+    if args.exclude:
+        bd, excluded = exclude(bd, args.exclude)
 
     rules = parse_rules(args.rules.read_text()) if args.rules else None
     notes = json.loads(args.notes.read_text()) if args.notes else {}
     verdicts = {e.key: verdict(e, rules) for e in bd.edges_added}
 
-    shown, rest = render.drawn(bd)
+    title = f"{Path(source.repo).name} {source.short(args.head)} branch graph"
+    subtitle = f"{source.short(base)} → {source.short(args.head)}  ·  root {args.root}  ·  depth {args.depth}"
+    stem = args.out.with_suffix("")
+    # A previous run's diagrams would be render-checked as this run's.
+    views_before = [f for f in stem.parent.glob(f"{stem.name}-*.mmd") if f.stem.removeprefix(f"{stem.name}-").isdigit()]
+    for stale in [args.out.with_suffix(".mmd"), *views_before]:
+        stale.unlink(missing_ok=True)
+    if args.max_nodes is None:
+        shown, rest = render.drawn(bd)
+        diagrams = [("", render.mermaid(bd, verdicts, shown, rest), shown)]
+        files = [args.out.with_suffix(".mmd")]
+    else:
+        try:
+            views = render.views(bd, args.max_nodes)
+        except ValueError as e:
+            p.error(str(e))
+        diagrams = [(v.title, render.view_mermaid(bd, verdicts, v), v.shown) for v in views]
+        shown = sorted({m for v in views for m in v.shown})
+        rest = len(bd.base.nodes | bd.head.nodes) - len(shown)
+        files = [Path(f"{stem}-{k}.mmd") for k in range(1, len(views) + 1)]
     files_of = {}
     for path, module in {**bd.base.files, **bd.head.files}.items():
         files_of.setdefault(module, []).append(path)
     changed_files = set(bd.numstat)
     hunks = {m: source.hunks(base, args.head, sorted(set(files_of.get(m, [])) & changed_files)) for m in shown}
 
-    mmd = render.mermaid(bd, verdicts, shown, rest)
-    title = f"{Path(source.repo).name} {source.short(args.head)} branch graph"
-    subtitle = f"{source.short(base)} → {source.short(args.head)}  ·  root {args.root}  ·  depth {args.depth}"
-    args.out.write_text(render.page(bd, title, subtitle, mmd, verdicts, notes, hunks, shown, rest, colors))
-    args.out.with_suffix(".mmd").write_text(mmd)
+    args.out.write_text(render.page(bd, title, subtitle, diagrams, verdicts, notes, hunks, shown, rest, colors, excluded))
+    for path, (_, mmd, _) in zip(files, diagrams):
+        path.write_text(mmd)
 
-    print(render.summary(bd, verdicts))
+    print(render.summary(bd, verdicts, excluded, None if args.max_nodes is None else len(diagrams)))
     for e in bd.edges_added:
         print(f"{e.key}  {e.file}:{e.line}  {verdicts[e.key]}")
     return 0
