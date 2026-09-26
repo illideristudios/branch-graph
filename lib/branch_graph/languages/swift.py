@@ -10,8 +10,11 @@ import re
 from pathlib import PurePosixPath
 from typing import Iterator
 
+from . import _braces
+
 ModuleId = tuple[str, ...]
 
+TYPE = re.compile(r"\b(?:class|struct|enum|extension|actor|protocol)[ \t]+(?!func\b|var\b|let\b)([A-Za-z_][\w.]*)")
 IMPORT = re.compile(
     r"^[ \t]*(?:(?:@\w+(?:\([^)\n]*\))?|public|package|internal|fileprivate|private)[ \t]+)*"
     r"import[ \t]+(?:(?:typealias|struct|class|enum|protocol|let|var|func)[ \t]+)?(\w+)",
@@ -41,6 +44,9 @@ class SwiftModule:
         for m in IMPORT.finditer(source):
             if (target := (m.group(1),)) in known:
                 yield target, source.count("\n", 0, m.start()) + 1
+
+    def classes(self, source: str) -> list[tuple[str, int, int]]:
+        return _braces.ranges(source, TYPE)
 
 
 MODULE = SwiftModule()

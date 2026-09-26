@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import math
 import re
 from collections import Counter
@@ -10,6 +11,7 @@ from dataclasses import dataclass
 from html import escape
 
 from .domain import BranchDiff, Edge, ModuleId, name
+from .metrics import Report, Rollup, Row
 
 MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"
 # ponytail: one fixed budget. Mermaid refuses more than 500 edges, and well before that a picture stops being readable:
@@ -160,7 +162,20 @@ def _ids(bd: BranchDiff) -> dict[ModuleId, int]:
     return {m: i for i, m in enumerate(sorted(bd.base.nodes | bd.head.nodes))}
 
 
-def mermaid(bd: BranchDiff, verdicts: dict[str, str], shown: list[ModuleId], rest: int, elsewhere: dict[ModuleId, int] | None = None) -> str:
+def badge(u: Rollup) -> str:
+    """The metrics line under a module's name: complexity change, diff coverage, duplication written."""
+    parts = [f"cx {u.ccn_delta:+g}"] if u.functions else []
+    parts += [f"cov {u.coverage:.0%}"] if u.coverage is not None else []
+    parts += [f"dup {u.clones}"] if u.clones else []
+    return " · ".join(parts)
+
+
+def badges(report: Report | None) -> dict[ModuleId, str]:
+    return {m: b for m, u in report.modules.items() if (b := badge(u))} if report else {}
+
+
+def mermaid(bd: BranchDiff, verdicts: dict[str, str], shown: list[ModuleId], rest: int, elsewhere: dict[ModuleId, int] | None = None,
+            badges: dict[ModuleId, str] | None = None) -> str:
     every = _ids(bd)
     ids = {m: f"n{every[m]}" for m in shown}
     elsewhere = elsewhere or {}
@@ -168,6 +183,7 @@ def mermaid(bd: BranchDiff, verdicts: dict[str, str], shown: list[ModuleId], res
     for m, nid in ids.items():
         label = name(m) + (f"<br/>+{bd.changed[m][0]} −{bd.changed[m][1]}" if m in bd.changed else "")
         label += f"<br/>in view {elsewhere[m]}" if m in elsewhere else ""
+        label += f"<br/>{badges[m]}" if badges and m in badges else ""
         cls = ":::added" if m in bd.added else ":::removed" if m in bd.removed else ":::changed" if m in bd.changed else ""
         lines.append(f'  {nid}["{label}"]{cls}')
     if rest:
@@ -191,8 +207,8 @@ def mermaid(bd: BranchDiff, verdicts: dict[str, str], shown: list[ModuleId], res
     return "\n".join(lines) + "\n"
 
 
-def view_mermaid(bd: BranchDiff, verdicts: dict[str, str], view: View) -> str:
-    return f"%% view: {view.title}\n" + mermaid(bd, verdicts, view.shown, view.rest, view.elsewhere)
+def view_mermaid(bd: BranchDiff, verdicts: dict[str, str], view: View, badges: dict[ModuleId, str] | None = None) -> str:
+    return f"%% view: {view.title}\n" + mermaid(bd, verdicts, view.shown, view.rest, view.elsewhere, badges)
 
 
 def _files(text: str) -> list[tuple[str, list[str]]]:
@@ -250,9 +266,89 @@ class Anchors:
         return self.lines.get((e.file, side, e.line)) or self.paths.get(e.file) or panel
 
 
+INSTALL_HINT = ('<p class="muted">No metrics library found. For complexity and duplication, <code>pip install lizard</code>; '
+                'for Python maintainability, <code>pip install radon</code>, into the Python that runs branch-graph. '
+                'Coverage comes from a report passed with <code>--coverage</code>.</p>')
+
+
+def _num(v: float | None) -> str:
+    return "—" if v is None else f"{v:g}"
+
+
+def _change(b: float | None, h: float | None, higher_is_better: bool = False) -> str:
+    """A table cell for a value before → after; worse or better only when both sides exist."""
+    if b is not None and b == h:
+        return f'<td class="num">{_num(h)}</td>'
+    cls = ""
+    if b is not None and h is not None:
+        cls = " better" if (h > b) == higher_is_better else " worse"
+    return f'<td class="num{cls}">{_num(b)} → {_num(h)}</td>'
+
+
+def _pct(covered: int, executable: int) -> str:
+    return f"{covered / executable:.0%}" if executable else "—"
+
+
+def _metrics_section(report: Report, module_link) -> str:
+    tools = "; ".join(f"{escape(n)} {escape(v)}: {escape(what)}" for n, v, what in report.tools)
+    reports = ", ".join(escape(Path(r).name) for r in report.reports)
+    head = f'<p class="muted">{tools or "no metrics library"}{"; coverage from " + reports if reports else ""}.</p>'
+    if not report.tools and not report.reports:
+        return f'<section id="metrics"><h2>Metrics</h2>{INSTALL_HINT}</section>'
+    body = "".join(
+        f"<tr><td>{module_link(m)}</td><td class=\"num\">{u.functions}</td>"
+        f'<td class="num{" worse" if u.ccn_delta > 0 else " better" if u.ccn_delta < 0 else ""}">{u.ccn_delta:+g}</td>'
+        f'<td class="num">{_num(u.ccn_max) if u.functions else "—"}</td><td class="num">{u.clones}</td>'
+        f'<td class="num">{_pct(u.covered, u.executable)}</td></tr>'
+        for m, u in sorted(report.modules.items())
+    ) or '<tr><td colspan="6" class="muted">No function, clone or covered line the branch touched.</td></tr>'
+    hint = "" if report.tools else INSTALL_HINT
+    return (f'<section id="metrics"><h2>Metrics</h2>{head}{hint}<div class="scroll"><table><thead><tr><th>Module</th><th>Functions touched</th>'
+            f'<th>Complexity Δ</th><th>Worst complexity</th><th>Duplication written</th><th>Diff coverage</th></tr></thead><tbody>{body}'
+            '</tbody></table></div></section>')
+
+
+def _metrics_panel(report: Report, paths: set[str], anchors: Anchors) -> str:
+    """One module's touched functions by class, the duplication it wrote, and per-file values (radon's MI)."""
+    out = []
+    rows = [r for r in report.rows if r.path in paths]
+    if rows:
+        body, last = [], object()
+        for r in sorted(rows, key=lambda r: (r.path, r.cls or "", (r.head or r.base).start)):
+            if (r.path, r.cls) != last:
+                cls = f"{escape(r.cls)} " if r.cls else ""
+                body.append(f'<tr class="cls"><td colspan="5" class="mono">{cls}<span class="muted">{escape(r.path)}</span></td></tr>')
+            last = (r.path, r.cls)
+            f, side = (r.head, "n") if r.head else (r.base, "o")
+            target = anchors.lines.get((r.path, side, f.start)) or anchors.paths.get(r.path)
+            label = f"{escape(r.name)}{PILL['new'] if not r.base else PILL['removed'] if not r.head else ''}"
+            where = f"{escape(r.path)}:{f.start}"
+            cell = f'<a class="mono" href="#{target}" title="{where}">{label}</a>' if target else f'<span class="mono" title="{where}">{label}</span>'
+            body.append(f"<tr><td>{cell}</td>{_change(r.value('base', 'ccn'), r.value('head', 'ccn'))}"
+                        f"{_change(r.value('base', 'nloc'), r.value('head', 'nloc'))}{_change(r.value('base', 'params'), r.value('head', 'params'))}"
+                        f'<td class="num">{_pct(r.covered, r.executable)}</td></tr>')
+        out.append('<div class="metrics"><h3>Functions touched</h3><div class="scroll"><table><thead><tr><th>Function</th><th>Complexity</th>'
+                   f'<th>Lines</th><th>Params</th><th>Coverage</th></tr></thead><tbody>{"".join(body)}</tbody></table></div></div>')
+    clones = [c for c in report.clones if any(p in paths for p, _, _ in c.snippets)]
+    if clones:
+        def spot(p: str, a: int, b: int) -> str:
+            target = anchors.lines.get((p, "n", a)) or anchors.paths.get(p)
+            text = f"{escape(p)}:{a}–{b}"
+            return f'<a class="mono" href="#{target}">{text}</a>' if target else f'<span class="mono">{text}</span>'
+        li = "".join(f"<li>{' ≈ '.join(spot(*s) for s in c.snippets)}</li>" for c in clones)
+        out.append(f'<div class="metrics"><h3>Duplication written <span class="muted">{len(clones)}</span></h3><ul>{li}</ul></div>')
+    files = sorted(p for p in paths if p in report.base_files or p in report.head_files)
+    if files:
+        li = "".join(
+            f'<li><span class="mono">{escape(p)}</span> maintainability '
+            f'{_num(report.base_files.get(p, {}).get("mi"))} → {_num(report.head_files.get(p, {}).get("mi"))}</li>' for p in files)
+        out.append(f'<div class="metrics"><h3>Files</h3><ul>{li}</ul></div>')
+    return "".join(out)
+
+
 def page(bd: BranchDiff, title: str, subtitle: str, diagrams: list[tuple[str, str, list[ModuleId]]], verdicts: dict[str, str],
          notes: dict[str, str], hunks: dict[ModuleId, str], shown: list[ModuleId], rest: int,
-         colors: dict[str, dict[str, str]] | None = None, excluded: int | None = None) -> str:
+         colors: dict[str, dict[str, str]] | None = None, excluded: int | None = None, metrics: Report | None = None) -> str:
     """diagrams: (view title, Mermaid text, modules it draws); one untitled diagram when there are no views.
     shown: every drawn module, one panel each."""
     every_id = _ids(bd)
@@ -286,11 +382,15 @@ def page(bd: BranchDiff, title: str, subtitle: str, diagrams: list[tuple[str, st
             out.append(f'<div><h3>{title} <span class="muted">{len(items)}</span></h3><ul>{li or "<li class=muted>none</li>"}</ul></div>')
         return f'<div class="conn">{"".join(out)}</div>'
 
+    paths_of: dict[ModuleId, set[str]] = {m: set() for m in shown}
+    for path, m in {**bd.base.files, **bd.head.files}.items():
+        if m in paths_of:
+            paths_of[m].add(path)
     state = lambda m: "added" if m in bd.added else "removed" if m in bd.removed else "changed" if m in bd.changed else "context"  # noqa: E731
     details = "\n".join(
         f'<details id="{ids[m]}"><summary><span class="mono">{escape(name(m))}</span> <span class="pill {state(m)}">{state(m)}</span>'
         + (f' <span class="mono muted">+{bd.changed[m][0]} −{bd.changed[m][1]}</span>' if m in bd.changed else "")
-        + f'</summary>{connections(m)}{diffs[m] or NO_CHANGES}</details>'
+        + f'</summary>{connections(m)}{_metrics_panel(metrics, paths_of[m], anchors) if metrics else ""}{diffs[m] or NO_CHANGES}</details>'
         for m in shown
     )
     data: dict[str, list] = {"links": []}
@@ -309,6 +409,7 @@ def page(bd: BranchDiff, title: str, subtitle: str, diagrams: list[tuple[str, st
     chips += [("context", f"{excluded} excluded")] if excluded is not None else []
     return TEMPLATE.format(
         title=escape(title), subtitle=escape(subtitle), cdn=MERMAID_CDN, graphs="\n".join(graphs), table=table, details=details,
+        metrics=_metrics_section(metrics, module_link) if metrics else "",
         chips="".join(f'<span class="pill {c}">{escape(t)}</span>' for c, t in chips),
         rest=f"{rest} untouched modules not drawn." if rest else "",
         data=json.dumps(data).replace("</", "<\\/"),
@@ -393,6 +494,15 @@ pre.diff .meta {{ color: var(--muted); padding-left: 11ch; }}
 .graph .flowchart-link.hl {{ stroke-width: 3px !important; }}
 .graph .hit {{ stroke: transparent !important; stroke-width: 14px !important; fill: none; pointer-events: stroke; cursor: pointer; }}
 .graph .node {{ cursor: pointer; }}
+td.num, th {{ font-variant-numeric: tabular-nums; }}
+td.num {{ white-space: nowrap; }}
+td.worse {{ color: var(--del); }}
+td.better {{ color: var(--add); }}
+tr.cls td {{ background: var(--bg); }}
+.metrics {{ padding: 10px 14px; border-top: 1px solid var(--rule); }}
+.metrics h3 {{ font-size: .75rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin: 0 0 6px; }}
+.metrics ul {{ margin: 0; padding-left: 18px; display: grid; gap: 2px; }}
+code {{ font-family: var(--mono); font-size: .86em; }}
 </style>
 <main>
   <header>
@@ -411,6 +521,7 @@ pre.diff .meta {{ color: var(--muted); padding-left: 11ch; }}
 {table}
     </tbody></table></div>
   </section>
+  {metrics}
   <section>
     <h2>Modules</h2>
     <div class="modules">

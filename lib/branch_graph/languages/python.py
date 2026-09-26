@@ -43,5 +43,24 @@ class PythonModule:
                 if (hit := _longest_known(target, known)) is not None:
                     yield hit, node.lineno
 
+    def classes(self, source: str) -> list[tuple[str, int, int]]:
+        """(qualified name, first line, last line) of every class, nested ones as `Outer.Inner`."""
+        try:
+            tree = ast.parse(source)
+        except (SyntaxError, ValueError):
+            return []
+        out = []
+
+        def walk(node: ast.AST, prefix: str) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, ast.ClassDef):
+                    out.append((prefix + child.name, child.lineno, child.end_lineno or child.lineno))
+                    walk(child, f"{prefix}{child.name}.")
+                else:
+                    walk(child, prefix)
+
+        walk(tree, "")
+        return out
+
 
 MODULE = PythonModule()

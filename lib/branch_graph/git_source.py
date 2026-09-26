@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
+
+HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
 class GitSource:
@@ -52,3 +55,17 @@ class GitSource:
 
     def hunks(self, base: str, head: str, paths: list[str]) -> str:
         return self._git("diff", "--no-renames", base, head, "--", *paths) if paths else ""
+
+    def changed_lines(self, base: str, head: str, root: str) -> dict[str, tuple[set[int], set[int]]]:
+        """{path: (base lines removed or changed, head lines added or changed)}, from a zero-context diff."""
+        out: dict[str, tuple[set[int], set[int]]] = {}
+        lines = None
+        for line in self._git("diff", "--no-renames", "-U0", base, head, "--", root).splitlines():
+            if line.startswith("diff --git a/"):
+                both = line[len("diff --git a/"):]
+                lines = out.setdefault(both[: (len(both) - 3) // 2], (set(), set()))
+            elif lines is not None and (h := HUNK.match(line)):
+                a, b, c, d = int(h[1]), int(h[2] or 1), int(h[3]), int(h[4] or 1)
+                lines[0].update(range(a, a + b))
+                lines[1].update(range(c, c + d))
+        return out

@@ -27,6 +27,9 @@ The tool is `bin/branch-graph` two levels above this skill's base directory. Lan
    - `--rules ARCHITECTURE.md` reads the first ```` ```import-rules ```` fence (one `A -> B` glob pair per line). With no fence, every verdict is `no rules`. Never write rules into a file to get a verdict.
 
    - `--colors colors.json` overrides the palette, for the page and the diagram alike: `{"light": {"add": "#1f8a4c"}, "dark": {"bg": "#000000"}}`. The tokens are `bg surface ink muted rule edge accent accent-bg add add-bg del del-bg drift drift-bg hdr`; an unknown token, or a value holding `;`, `:`, braces, quotes or angle brackets, is a usage error. With `--max-nodes` it colors every view.
+   - **Metrics** come from optional libraries in the Python that runs the tool (`lizard`: complexity, lines and parameters per function, plus duplication; `radon`: Python maintainability index). Without them the page says what to install and still shows coverage. Only functions whose lines the branch changed are scored, before → after, grouped by class in each module's panel; each module's box gets a line such as `cx +3 · cov 62% · dup 1`.
+   - `--coverage REPORT` (repeatable) reads a Cobertura, Clover or LCOV report of the head revision (`coverage xml`, `coverage lcov`, PHPUnit `--coverage-cobertura`/`--coverage-clover`, `llvm-cov export -format=lcov`). Branch-graph never runs tests. Module coverage is diff coverage: the share of changed, executable lines that ran. Function coverage covers the function's whole body.
+   - `--dup-scope changed|modules|root` is where copies of changed code are looked for; the default `modules` scans the files of every module the branch touched. `root` is thorough but slow: the whole OpenEMR tree takes 92 s.
 
    Stdout is one summary line (`nodes +a −r ~c edges +e −x drift=d`, plus ` excluded=n` with `--exclude` and ` views=k` with `--max-nodes`), then one line per new edge with the `file:line` that created it.
 
@@ -41,5 +44,6 @@ The tool is `bin/branch-graph` two levels above this skill's base directory. Lan
 ## Reading it
 
 - A new edge into a module nobody expected is the review's first question, whatever the verdict.
+- Complexity is lizard's cyclomatic count, the stand-in for flog. A `cx +N` on a box is the change in the summed complexity of its touched functions, and red cells mean a number went up. "Duplication written" counts clones with at least one copy on a line the branch added or changed, the stand-in for flay.
 - `drift` is a rule check, not a judgement. The finding is the edge and its `file:line`; whether the rule or the code is wrong is the reviewer's call.
 - Modules one hop from a touched one are drawn for context, most-connected first, until 150 edges are drawn; only edges with a touched end are drawn. The count of undrawn modules is on the page. On the OpenEMR fork `--root .` wanted 561 edges and now draws 148. Touched modules are always drawn, so if the render-check still fails or the picture is too dense, `--exclude` what the review does not need, split it with `--max-nodes`, or narrow `--root`.

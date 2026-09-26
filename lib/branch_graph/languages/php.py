@@ -9,10 +9,13 @@ import re
 from pathlib import PurePosixPath
 from typing import Iterator
 
+from . import _braces
+
 ModuleId = tuple[str, ...]
 
 NAMESPACE = re.compile(r"^[ \t]*namespace[ \t]+([\w\\]+)[ \t]*[;{]", re.M)
 USE = re.compile(r"^[ \t]*use[ \t]+(?!function\b|const\b)([\w\\ \t,]+?)\s*(?:\{([^}]*)\})?\s*;", re.M)
+TYPE = re.compile(r"(?<!::)\b(?:class|interface|trait|enum)[ \t]+(\w+)")
 ALIAS = re.compile(r"\s+as\s+\w+$")
 
 
@@ -47,6 +50,9 @@ class PhpModule:
             for name in _names(m.group(1), m.group(2)):
                 if "\\" in name and (target := tuple(name.split("\\"))) in known:
                     yield target, line
+
+    def classes(self, source: str) -> list[tuple[str, int, int]]:
+        return _braces.ranges(source, TYPE)
 
 
 MODULE = PhpModule()

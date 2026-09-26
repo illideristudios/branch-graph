@@ -6,13 +6,15 @@ import importlib.util
 from pathlib import Path
 
 
-def load(directory: Path = Path(__file__).parent) -> list:
+def load(directory: Path = Path(__file__).parent, attr: str = "MODULE", package: str = __name__) -> list:
+    """`attr` of every file in `directory` not starting with `_`, in name order. The metrics providers load this way too."""
     modules = []
     for file in sorted(directory.glob("[!_]*.py")):
-        spec = importlib.util.spec_from_file_location(f"{__name__}.{file.stem}", file)
+        spec = importlib.util.spec_from_file_location(f"{package}.{file.stem}", file, submodule_search_locations=None)
         module = importlib.util.module_from_spec(spec)
+        module.__package__ = package
         spec.loader.exec_module(module)
-        modules.append(module.MODULE)
+        modules.append(getattr(module, attr))
     return modules
 
 

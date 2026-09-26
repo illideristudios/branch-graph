@@ -14,10 +14,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
-from branch_graph import languages, render  # noqa: E402
+from branch_graph import coverage_report, languages, providers, render  # noqa: E402
 from branch_graph.domain import exclude, parse_rules, verdict  # noqa: E402
 from branch_graph.git_source import GitSource  # noqa: E402
-from branch_graph.use_case import branch_graph  # noqa: E402
+from branch_graph.use_case import branch_graph, measure  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -32,6 +32,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--colors", type=Path, help='JSON {"light": {"add": "#1f8a4c", ...}, "dark": {...}} over the default palette')
     p.add_argument("--exclude", action="append", default=[], metavar="GLOB", help="drop modules whose name matches, e.g. 'tests.*'; repeatable")
     p.add_argument("--max-nodes", type=int, metavar="N", help="split the drawing into views of at most N modules, page-1.mmd…")
+    p.add_argument("--coverage", action="append", default=[], type=Path, metavar="REPORT",
+                   help="Cobertura, Clover or LCOV report of the head revision; repeatable")
+    p.add_argument("--dup-scope", choices=("changed", "modules", "root"), default="modules",
+                   help="where copies of changed code are looked for (default: the modules the branch touched)")
     p.add_argument("--out", type=Path, required=True, help="page.html; page.mmd is written beside it")
     args = p.parse_args(argv)
 
@@ -42,10 +46,23 @@ def main(argv: list[str] | None = None) -> int:
 
     source = GitSource(args.repo)
     base = args.base or source.merge_base("origin/main", args.head)
-    bd = branch_graph(source, languages.selector(languages.load()), base, args.head, args.root, args.depth)
+    select = languages.selector(languages.load())
+    bd = branch_graph(source, select, base, args.head, args.root, args.depth)
     excluded = None
     if args.exclude:
         bd, excluded = exclude(bd, args.exclude)
+
+    coverage: dict[str, dict[int, int]] = {}
+    for report in args.coverage:
+        try:
+            for path, hits in coverage_report.read(report, sorted(bd.head.files)).items():
+                for line, n in hits.items():
+                    coverage.setdefault(path, {})[line] = max(n, coverage.get(path, {}).get(line, 0))
+        except (ValueError, OSError) as e:
+            p.error(str(e))
+    report = measure(source, select, providers.load(), base, args.head, args.root, bd, coverage or None,
+                     [str(r) for r in args.coverage], args.dup_scope)
+    badges = render.badges(report)
 
     rules = parse_rules(args.rules.read_text()) if args.rules else None
     notes = json.loads(args.notes.read_text()) if args.notes else {}
@@ -60,14 +77,14 @@ def main(argv: list[str] | None = None) -> int:
         stale.unlink(missing_ok=True)
     if args.max_nodes is None:
         shown, rest = render.drawn(bd)
-        diagrams = [("", render.mermaid(bd, verdicts, shown, rest), shown)]
+        diagrams = [("", render.mermaid(bd, verdicts, shown, rest, badges=badges), shown)]
         files = [args.out.with_suffix(".mmd")]
     else:
         try:
             views = render.views(bd, args.max_nodes)
         except ValueError as e:
             p.error(str(e))
-        diagrams = [(v.title, render.view_mermaid(bd, verdicts, v), v.shown) for v in views]
+        diagrams = [(v.title, render.view_mermaid(bd, verdicts, v, badges), v.shown) for v in views]
         shown = sorted({m for v in views for m in v.shown})
         rest = len(bd.base.nodes | bd.head.nodes) - len(shown)
         files = [Path(f"{stem}-{k}.mmd") for k in range(1, len(views) + 1)]
@@ -77,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     changed_files = set(bd.numstat)
     hunks = {m: source.hunks(base, args.head, sorted(set(files_of.get(m, [])) & changed_files)) for m in shown}
 
-    args.out.write_text(render.page(bd, title, subtitle, diagrams, verdicts, notes, hunks, shown, rest, colors, excluded))
+    args.out.write_text(render.page(bd, title, subtitle, diagrams, verdicts, notes, hunks, shown, rest, colors, excluded, report))
     for path, (_, mmd, _) in zip(files, diagrams):
         path.write_text(mmd)
 

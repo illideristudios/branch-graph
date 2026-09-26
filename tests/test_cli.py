@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 import subprocess
@@ -116,6 +117,37 @@ class CliTest(unittest.TestCase):
         run = subprocess.run(argv, capture_output=True, text=True)
         self.assertEqual(run.returncode, 2)
         self.assertIn("unknown token 'grene'", run.stderr)
+
+    def test_coverage_report_gives_diff_coverage_per_module(self):
+        lcov = Path(self.tmp.name, "lcov.info")
+        lcov.write_text(f"SF:{self.repo}/b.py\nDA:1,1\nDA:2,0\nend_of_record\nSF:c.py\nDA:1,1\nDA:2,1\nDA:3,1\nend_of_record\n")
+        self.run_cli("--coverage", str(lcov))
+        page = self.out.read_text()
+        metrics = re.search(r'<section id="metrics">.*?</section>', page, re.S).group(0)
+        self.assertRegex(metrics, r'>b</a>.*?50%')
+        self.assertRegex(metrics, r'>c</a>.*?100%')
+        self.assertIn("lcov.info", metrics)
+
+    def test_a_bad_coverage_report_is_a_usage_error(self):
+        bad = Path(self.tmp.name, "cov.txt")
+        bad.write_text("nothing here\n")
+        argv = [sys.executable, str(BIN), "--repo", str(self.repo), "--base", "base", "--root", ".", "--out", str(self.out), "--coverage", str(bad)]
+        run = subprocess.run(argv, capture_output=True, text=True)
+        self.assertEqual(run.returncode, 2)
+        self.assertIn("not a Cobertura, Clover or LCOV", run.stderr)
+
+    @unittest.skipUnless(importlib.util.find_spec("lizard"), "lizard not installed")
+    def test_touched_functions_with_complexity_before_and_after(self):
+        commit(self.repo, {"b.py": "X = 2\nY = '<x>'\n\ndef pick(a):\n    if a:\n        return 1\n    return 2\n"}, "more")
+        self.run_cli()
+        _, b = self.panel(self.out.read_text(), "b")
+        self.assertRegex(b, r'<td[^>]*>.*pick.*</td><td[^>]*>— → 2</td>')
+
+    def test_without_a_tool_the_section_says_what_to_install(self):
+        if importlib.util.find_spec("lizard"):
+            self.skipTest("lizard is installed")
+        self.run_cli()
+        self.assertIn("pip install lizard", self.out.read_text())
 
     def test_rules_and_notes(self):
         rules = Path(self.tmp.name, "ARCH.md")
