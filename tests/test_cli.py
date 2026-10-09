@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -144,9 +145,13 @@ class CliTest(unittest.TestCase):
         self.assertRegex(b, r'<td[^>]*>.*pick.*</td><td[^>]*>— → 2</td>')
 
     def test_without_a_tool_the_section_says_what_to_install(self):
-        if importlib.util.find_spec("lizard"):
-            self.skipTest("lizard is installed")
-        self.run_cli()
+        hidden = Path(self.tmp.name, "hidden")
+        hidden.mkdir()
+        for name in ("lizard", "radon"):
+            (hidden / f"{name}.py").write_text('raise ImportError("hidden for this test")\n')
+        env = {**os.environ, "PYTHONPATH": str(hidden) + os.pathsep + os.environ.get("PYTHONPATH", "")}
+        argv = [sys.executable, str(BIN), "--repo", str(self.repo), "--base", "base", "--root", ".", "--out", str(self.out)]
+        subprocess.run(argv, capture_output=True, text=True, check=True, env=env)
         self.assertIn("pip install lizard", self.out.read_text())
 
     def test_rules_and_notes(self):
