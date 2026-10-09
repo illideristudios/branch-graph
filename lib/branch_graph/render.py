@@ -50,8 +50,12 @@ def _vars(tokens: dict[str, str]) -> str:
     return " ".join(f"--{k}: {v};" for k, v in tokens.items())
 
 
+def drift_count(verdicts: dict[str, str]) -> int:
+    return sum(v == "drift" for v in verdicts.values())
+
+
 def summary(bd: BranchDiff, verdicts: dict[str, str], excluded: int | None = None, views: int | None = None) -> str:
-    drift = sum(v == "drift" for v in verdicts.values())
+    drift = drift_count(verdicts)
     line = f"nodes +{len(bd.added)} −{len(bd.removed)} ~{len(bd.changed)} edges +{len(bd.edges_added)} −{len(bd.edges_removed)} drift={drift}"
     return line + (f" excluded={excluded}" if excluded is not None else "") + (f" views={views}" if views is not None else "")
 

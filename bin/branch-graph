@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 from branch_graph import coverage_report, languages, providers, render  # noqa: E402
-from branch_graph.domain import exclude, parse_rules, verdict  # noqa: E402
+from branch_graph.domain import exclude, name, parse_rules, verdict  # noqa: E402
 from branch_graph.git_source import GitSource  # noqa: E402
 from branch_graph.use_case import branch_graph, measure  # noqa: E402
 
@@ -37,12 +37,21 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dup-scope", choices=("changed", "modules", "root"), default="modules",
                    help="where copies of changed code are looked for (default: the modules the branch touched)")
     p.add_argument("--out", type=Path, required=True, help="page.html; page.mmd is written beside it")
+    p.add_argument("--json", type=Path, help="machine-readable summary: nodes, new and removed edges with verdicts, drift count")
+    p.add_argument("--fail-on-drift", action="store_true", help="exit 1 when a new import has the verdict drift; the page and output are still written")
     args = p.parse_args(argv)
 
     try:
         colors = render.palette(json.loads(args.colors.read_text()) if args.colors else None)
     except (ValueError, OSError) as e:
         p.error(str(e))
+
+    try:
+        rules = parse_rules(args.rules.read_text()) if args.rules else None
+    except OSError as e:
+        p.error(str(e))
+    if args.fail_on_drift and rules is None:
+        p.error("--fail-on-drift needs --rules with an import-rules block: no import-rules block found, so no import can be drift")
 
     source = GitSource(args.repo)
     base = args.base or source.merge_base("origin/main", args.head)
@@ -64,7 +73,6 @@ def main(argv: list[str] | None = None) -> int:
                      [str(r) for r in args.coverage], args.dup_scope)
     badges = render.badges(report)
 
-    rules = parse_rules(args.rules.read_text()) if args.rules else None
     notes = json.loads(args.notes.read_text()) if args.notes else {}
     verdicts = {e.key: verdict(e, rules) for e in bd.edges_added}
 
@@ -101,7 +109,21 @@ def main(argv: list[str] | None = None) -> int:
     print(render.summary(bd, verdicts, excluded, None if args.max_nodes is None else len(diagrams)))
     for e in bd.edges_added:
         print(f"{e.key}  {e.file}:{e.line}  {verdicts[e.key]}")
-    return 0
+    drift = render.drift_count(verdicts)
+    if args.json:
+        args.json.write_text(json.dumps({
+            "base": source.rev(base),
+            "head": source.rev(args.head),
+            "nodes": {kind: sorted(name(m) for m in modules)
+                      for kind, modules in (("added", bd.added), ("removed", bd.removed), ("changed", bd.changed))},
+            "edges": {kind: [{"src": name(e.src), "dst": name(e.dst), "file": e.file, "line": e.line,
+                              **({"verdict": verdicts[e.key]} if kind == "added" else {})} for e in edges]
+                      for kind, edges in (("added", bd.edges_added), ("removed", bd.edges_removed))},
+            "drift": drift,
+            "excluded": excluded,
+            "views": None if args.max_nodes is None else len(diagrams),
+        }))
+    return 1 if args.fail_on_drift and drift else 0
 
 
 if __name__ == "__main__":
