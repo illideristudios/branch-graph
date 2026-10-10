@@ -1,0 +1,20 @@
+{
+  "name": "branch-graph",
+  "description": "Standalone home of the branch-graph Claude Code plugin, extracted from locriani/ai-additions.",
+  "owner": {
+    "name": "Zach Gardner",
+    "email": "locriani@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "branch-graph",
+      "description": "Draws a branch's diff as a before/after module import diagram, each module linked to its hunks, new imports checked against an import-rules block. Languages plug in as modules; Python, PHP and Swift ship. --json writes a machine-readable summary; --fail-on-drift exits 1 on a drift verdict.",
+      "version": "0.6.0",
+      "source": "./",
+      "author": {
+        "name": "Zach Gardner",
+        "email": "locriani@gmail.com"
+      }
+    }
+  ]
+}
