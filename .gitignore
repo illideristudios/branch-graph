@@ -1,0 +1,15 @@
+.DS_Store
+*.bak.*
+*.swp
+*.swo
+*~
+
+# Per-machine Claude Code session state
+/.claude/
+
+# Python
+__pycache__/
+*.pyc
+/.venv
+.ruff_cache/
+.pytest_cache/
