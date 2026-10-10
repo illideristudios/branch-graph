@@ -39,7 +39,7 @@ The tool is `bin/branch-graph` two levels above this skill's base directory. Lan
 
 3. **Run it again** with `--notes <that file>`, so the why column is filled.
 
-4. **Render-check.** Run `mermaid-check.py <scratch>/page.mmd` (each `page-K.mmd` with `--max-nodes`) (from `mermaid-system-design`: the newest `~/.claude/plugins/cache/ai-additions/mermaid-system-design/*/skills/mermaid-system-design/scripts/mermaid-check.py`). It must exit 0. A diagram that did not render is not published.
+4. **Render-check.** Run `mermaid-check.py <scratch>/page.mmd` (each `page-K.mmd` with `--max-nodes`) (from the `mermaid-system-design` plugin, installed from its own marketplace: the newest `~/.claude/plugins/cache/mermaid-system-design/mermaid-system-design/*/skills/mermaid-system-design/scripts/mermaid-check.py`). It must exit 0. A diagram that did not render is not published. If `mermaid-system-design` is not installed, skip the render check and say so in the summary.
 
 5. **Publish** `page.html` with the Artifact tool, and put the link in the pull request body. For a PR opened before the page existed, add the link with `gh pr edit <n> --body-file`.
 
