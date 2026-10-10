@@ -1,0 +1,24 @@
+name: tests
+
+# Push only. A fork cannot push a branch here, so this workflow never runs a fork's code.
+on:
+  push:
+
+# The suite only reads the repository.
+permissions:
+  contents: read
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    # The full image, not slim: the suite needs git.
+    container: python:3.14
+    steps:
+      # v4.4.0, pinned to its commit: a tag can be moved.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          # Nothing after the checkout uses the token, so it is not left in .git/config for the suite to read.
+          persist-credentials: false
+      # The optional metrics providers; without them the suite skips tests, and a skipped test is not a pass.
+      - run: pip install lizard==1.24.1 radon==6.0.1
+      - run: python3 -m unittest discover -s tests
