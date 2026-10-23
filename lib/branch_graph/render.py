@@ -208,6 +208,11 @@ def badges(report: Report | None) -> dict[ModuleId, str]:
     return {m: b for m, u in report.modules.items() if (b := badge(u))} if report else {}
 
 
+def _text(s: str) -> str:
+    """A module name as Mermaid label text: it comes from a file path in the branch under review, so it is untrusted."""
+    return escape(" ".join(s.split()))
+
+
 def mermaid(bd: BranchDiff, verdicts: dict[str, str], shown: list[ModuleId], rest: int, elsewhere: dict[ModuleId, int] | None = None,
             badges: dict[ModuleId, str] | None = None) -> str:
     every = _ids(bd)
@@ -223,12 +228,12 @@ def mermaid(bd: BranchDiff, verdicts: dict[str, str], shown: list[ModuleId], res
         facts = [f"+{bd.changed[m][0]} −{bd.changed[m][1]}"] if m in bd.changed else []
         facts += [f"in view {elsewhere[m]}"] if m in elsewhere else []
         facts += [badges[m]] if badges and m in badges else []
-        label = f"<b>{name(m)}</b>" + "".join(f"<br/><span class='facts'>{f}</span>" for f in facts)
+        label = f"<b>{_text(name(m))}</b>" + "".join(f"<br/><span class='facts'>{f}</span>" for f in facts)
         cls = ":::added" if m in bd.added else ":::removed" if m in bd.removed else ":::changed" if m in bd.changed else ""
         lines.append(f'  {nid}["{label}"]{cls}')
     for key, title, names in (("usedby", "used by, unchanged", used_by), ("uses", "uses, unchanged", uses)):
         if names:
-            rows = "".join(f"<br/><a href='#n-{every[m]}'>{name(m)}</a> <span class='facts'>×{n}</span>" for m, n in names.items())
+            rows = "".join(f"<br/><a href='#n-{every[m]}'>{_text(name(m))}</a> <span class='facts'>×{n}</span>" for m, n in names.items())
             lines.append(f'  {key}["<span class=\'facts\'>{title}</span>{rows}"]:::context')
     red = []
     for i, (e, kind) in enumerate(links(bd, shown)):
@@ -254,7 +259,7 @@ def mermaid(bd: BranchDiff, verdicts: dict[str, str], shown: list[ModuleId], res
 
 
 def view_mermaid(bd: BranchDiff, verdicts: dict[str, str], view: View, badges: dict[ModuleId, str] | None = None) -> str:
-    return f"%% view: {view.title}\n" + mermaid(bd, verdicts, view.shown, view.rest, view.elsewhere, badges)
+    return f"%% view: {_text(view.title)}\n" + mermaid(bd, verdicts, view.shown, view.rest, view.elsewhere, badges)
 
 
 def _files(text: str) -> list[tuple[str, list[str]]]:
