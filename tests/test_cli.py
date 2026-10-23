@@ -108,7 +108,7 @@ class CliTest(unittest.TestCase):
         page = self.out.read_text()
         self.assertIn("--add: #00aa55;", page)
         self.assertIn("--bg: #000000;", page)
-        self.assertIn(".node.added rect {{ fill: var(--add-bg); stroke: var(--add); }}".replace("{{", "{").replace("}}", "}"), page)
+        self.assertIn(".node.added rect { fill: var(--add-bg) !important; stroke: var(--add) !important; }", page)
         self.assertNotRegex(self.out.with_suffix(".mmd").read_text(), r"#[0-9a-f]{3,6}\b|var\(")
 
     def test_bad_colors_file_is_a_usage_error(self):
@@ -164,7 +164,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("c -> a  c.py:2  drift", lines)
         page = self.out.read_text()
         self.assertIn("c reads a&#x27;s settings", page)
-        self.assertRegex(page, r"#graph svg #L_n\d+_n\d+_\d+ \{ stroke: var\(--drift\) !important; \}")
+        self.assertIn('"kind": "drift"', page)
 
     def test_json_summary(self):
         report = Path(self.tmp.name, "summary.json")

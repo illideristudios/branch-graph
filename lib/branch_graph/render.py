@@ -13,7 +13,9 @@ from html import escape
 from .domain import BranchDiff, Edge, ModuleId, name
 from .metrics import Report, Rollup, Row
 
-MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"
+MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11.16.1/dist/mermaid.esm.min.mjs"
+# ELK routes lines at right angles into each box's side; dagre, Mermaid's default, bends them through its waypoints.
+ELK_CDN = "https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.2.3/dist/mermaid-layout-elk.esm.min.mjs"
 # ponytail: one fixed budget. Mermaid refuses more than 500 edges, and well before that a picture stops being readable:
 # the OpenEMR fork at `--root .` wanted 561 (17 between touched modules, 544 out to context). Upgrade path: a flag.
 EDGE_BUDGET = 150
@@ -162,10 +164,26 @@ def edges(bd: BranchDiff) -> list[tuple[Edge, str]]:
     return [(e, "new" if key in new else "same") for key, e in sorted(bd.head.edges.items())] + [(e, "removed") for e in bd.edges_removed]
 
 
-def links(bd: BranchDiff, shown: list[ModuleId]) -> list[tuple[Edge, str]]:
-    """The drawn edges, in Mermaid's link order: both ends drawn and one end touched."""
+def _candidates(bd: BranchDiff, shown: list[ModuleId]) -> list[tuple[Edge, str]]:
     hot, ids = touched(bd), set(shown)
     return [(e, k) for e, k in edges(bd) if e.src in ids and e.dst in ids and (e.src in hot or e.dst in hot)]
+
+
+def context(bd: BranchDiff, shown: list[ModuleId]) -> tuple[dict[ModuleId, int], dict[ModuleId, int]]:
+    """The untouched drawn modules as (used by, uses): how many touched modules each imports, or is imported by, most
+    first. They are listed, not drawn: an untouched module's edges are all unchanged, and one arrow each is a hairball."""
+    hot, used_by, uses = touched(bd), Counter(), Counter()
+    for e, _ in _candidates(bd, shown):
+        used_by.update([e.src] if e.src not in hot else [])
+        uses.update([e.dst] if e.dst not in hot else [])
+    first = lambda c: dict(sorted(c.items(), key=lambda kv: (-kv[1], kv[0])))  # noqa: E731
+    return first(used_by), first(uses)
+
+
+def links(bd: BranchDiff, shown: list[ModuleId]) -> list[tuple[Edge, str]]:
+    """The drawn edges, in Mermaid's link order: both ends drawn and touched."""
+    hot = touched(bd)
+    return [(e, k) for e, k in _candidates(bd, shown) if e.src in hot and e.dst in hot]
 
 
 ARROW = {"new": "==>", "same": "-->", "removed": "-.->"}
@@ -195,29 +213,41 @@ def mermaid(bd: BranchDiff, verdicts: dict[str, str], shown: list[ModuleId], res
     every = _ids(bd)
     ids = {m: f"n{every[m]}" for m in shown}
     elsewhere = elsewhere or {}
+    hot = touched(bd)
+    used_by, uses = context(bd, shown)
+    boxes = [nid for m, nid in ids.items() if m in hot]
     lines = ["flowchart LR"]
     for m, nid in ids.items():
-        label = name(m) + (f"<br/>+{bd.changed[m][0]} −{bd.changed[m][1]}" if m in bd.changed else "")
-        label += f"<br/>in view {elsewhere[m]}" if m in elsewhere else ""
-        label += f"<br/>{badges[m]}" if badges and m in badges else ""
+        if m not in hot:
+            continue
+        facts = [f"+{bd.changed[m][0]} −{bd.changed[m][1]}"] if m in bd.changed else []
+        facts += [f"in view {elsewhere[m]}"] if m in elsewhere else []
+        facts += [badges[m]] if badges and m in badges else []
+        label = f"<b>{name(m)}</b>" + "".join(f"<br/><span class='facts'>{f}</span>" for f in facts)
         cls = ":::added" if m in bd.added else ":::removed" if m in bd.removed else ":::changed" if m in bd.changed else ""
         lines.append(f'  {nid}["{label}"]{cls}')
-    if rest:
-        lines.append(f'  more["… {plural(rest, "more module")} untouched"]:::more')
+    for key, title, names in (("usedby", "used by, unchanged", used_by), ("uses", "uses, unchanged", uses)):
+        if names:
+            rows = "".join(f"<br/><a href='#n-{every[m]}'>{name(m)}</a> <span class='facts'>×{n}</span>" for m, n in names.items())
+            lines.append(f'  {key}["<span class=\'facts\'>{title}</span>{rows}"]:::context')
     red = []
     for i, (e, kind) in enumerate(links(bd, shown)):
         lines.append(f"  {ids[e.src]} {ARROW[kind]} {ids[e.dst]}")
         if kind == "new" and verdicts.get(e.key) == "drift":
             red.append(i)
-    for nid in ids.values():
+    # Invisible links set the lists left and right of the touched modules; they come last, so data.links indexes the rest.
+    lines += [f"  usedby ~~~ {nid}" for nid in boxes] if used_by else []
+    lines += [f"  {nid} ~~~ uses" for nid in boxes] if uses else []
+    for nid in boxes:
         lines.append(f'  click {nid} href "#n-{nid[1:]}" _self')
     lines += [
         # Shape only: colors come from the page's palette, by class, so they follow --colors and dark mode.
         "  classDef added stroke-width:2px",
         "  classDef removed stroke-width:2px,stroke-dasharray:5 3",
         "  classDef changed stroke-width:2px",
-        "  classDef more fill:none,stroke:none",
     ]
+    # Right-angled lines read as a hand-drawn map; set in the source so a .mmd rendered elsewhere draws them too.
+    lines.append("  linkStyle default interpolate step")
     if red:
         lines.append(f"  linkStyle {','.join(map(str, red))} stroke-width:3px")
     return "\n".join(lines) + "\n"
@@ -410,16 +440,14 @@ def page(bd: BranchDiff, title: str, subtitle: str, diagrams: list[tuple[str, st
         for m in shown
     )
     data: dict[str, list] = {"links": []}
-    graphs, drift = [], []
+    graphs = []
     for k, (view, mmd, drawn_here) in enumerate(diagrams, 1):
         gid = f"graph-{k}" if view else "graph"
         heading = f'<h3>View {k} · <span class="mono">{escape(view)}</span></h3>' if view else ""
         graphs.append(VIEW.format(heading=heading, gid=gid, first=len(data["links"]), mmd=escape(mmd)))
-        drawn_links = links(bd, drawn_here)
-        data["links"] += [{"href": href(e, kind), "title": f"{e.key}  {e.file}:{e.line}"} for e, kind in drawn_links]
-        drift += [f"#{gid} svg #L_n{every_id[e.src]}_n{every_id[e.dst]}_{i}" for i, (e, kind) in enumerate(drawn_links)
-                  if kind == "new" and verdicts.get(e.key) == "drift"]
-    drift = ", ".join(drift)
+        data["links"] += [{"href": href(e, kind), "title": f"{e.key}  {e.file}:{e.line}",
+                           "kind": "drift" if kind == "new" and verdicts.get(e.key) == "drift" else kind}
+                          for e, kind in links(bd, drawn_here)]
     chips = [("added", f"+{len(bd.added)} modules"), ("removed", f"−{len(bd.removed)} modules"), ("changed", f"~{len(bd.changed)} changed"),
              ("context", f"+{len(bd.edges_added)} / −{len(bd.edges_removed)} edges"), ("drift", f"{sum(v == 'drift' for v in verdicts.values())} drift")]
     chips += [("context", f"{excluded} excluded")] if excluded is not None else []
@@ -436,12 +464,11 @@ def page(bd: BranchDiff, title: str, subtitle: str, diagrams: list[tuple[str, st
         + (f'<li class="muted">… and {more} more; --json lists every one</li>' if more > 0 else "")
         + "</ul></div></details>") if outside else ""
     return TEMPLATE.format(
-        title=escape(title), subtitle=escape(subtitle), cdn=MERMAID_CDN, graphs="\n".join(graphs), table=table, details=details,
+        title=escape(title), subtitle=escape(subtitle), cdn=MERMAID_CDN, elk=ELK_CDN, graphs="\n".join(graphs), table=table, details=details,
         metrics=_metrics_section(metrics, module_link) if metrics else "",
         chips="".join(f'<span class="pill {c}">{escape(t)}</span>' for c, t in chips),
         rest=f"{plural(rest, 'untouched module')} not drawn." if rest else "", outside=outside_html,
         data=json.dumps(data).replace("</", "<\\/"),
-        drift=f"{drift} {{ stroke: var(--drift) !important; }}" if drift else "",
         light=_vars((colors or PALETTE)["light"]), dark=_vars((colors or PALETTE)["dark"]),
     )
 
@@ -477,16 +504,22 @@ header {{ display: grid; gap: 10px; }}
 .scroll {{ overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; }}
 .graph {{ padding: 16px; min-height: 120px; }}
 .graph svg {{ max-width: none; }}
-.graph svg .flowchart-link {{ stroke: var(--edge); }}
-.graph svg .marker {{ fill: var(--edge); stroke: var(--edge); }}
-.graph svg .node rect, .graph svg .node polygon {{ fill: var(--surface); stroke: var(--rule); }}
-.graph svg .node.added rect {{ fill: var(--add-bg); stroke: var(--add); }}
-.graph svg .node.removed rect {{ fill: var(--del-bg); stroke: var(--del); }}
-.graph svg .node.changed rect {{ fill: var(--accent-bg); stroke: var(--accent); }}
-.graph svg .node.more rect {{ fill: none; stroke: none; }}
-.graph svg .nodeLabel {{ color: var(--ink); }}
-.graph svg .node.more .nodeLabel {{ color: var(--muted); }}
-{drift}
+/* !important throughout: Mermaid scopes its own theme rules to the diagram's id, which outranks any class rule here. */
+.graph svg .flowchart-link {{ stroke: var(--edge) !important; stroke-opacity: .35; }}
+.graph svg .flowchart-link.k-new {{ stroke: var(--add) !important; stroke-opacity: 1; stroke-width: 2.5px !important; }}
+.graph svg .flowchart-link.k-removed {{ stroke: var(--del) !important; stroke-opacity: 1; }}
+.graph svg .flowchart-link.k-drift {{ stroke: var(--drift) !important; stroke-opacity: 1; stroke-width: 3px !important; }}
+.graph svg .marker {{ fill: var(--edge) !important; stroke: var(--edge) !important; }}
+.graph svg .node rect, .graph svg .node polygon {{ fill: var(--surface) !important; stroke: var(--ink) !important; stroke-width: 1.25px !important; }}
+.graph svg .node.added rect {{ fill: var(--add-bg) !important; stroke: var(--add) !important; }}
+.graph svg .node.removed rect {{ fill: var(--del-bg) !important; stroke: var(--del) !important; }}
+.graph svg .node.changed rect {{ fill: var(--accent-bg) !important; stroke: var(--accent) !important; }}
+.graph svg .nodeLabel {{ color: var(--ink) !important; text-align: left; }}
+.graph svg .nodeLabel b {{ font-weight: 600; }}
+.graph svg .nodeLabel .facts {{ color: var(--muted); font-size: 11px; }}
+.graph svg .node.context rect {{ fill: none !important; stroke: var(--rule) !important; stroke-dasharray: 4 3; }}
+.graph svg .nodeLabel a {{ color: var(--ink); text-decoration: none; }}
+.graph svg .nodeLabel a:hover {{ text-decoration: underline; }}
 table {{ border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }}
 th, td {{ text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }}
 th {{ font-size: .75rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }}
@@ -521,7 +554,7 @@ pre.diff .meta {{ color: var(--muted); padding-left: 11ch; }}
 .focus button {{ font: inherit; font-size: .85rem; color: var(--muted); background: none; border: 1px solid var(--rule); border-radius: 999px; padding: 0 10px; cursor: pointer; }}
 .graph .focusing .flowchart-link:not(.hl) {{ opacity: .1; }}
 .graph .focusing .node:not(.hl) {{ opacity: .3; }}
-.graph .flowchart-link.hl {{ stroke-width: 3px !important; }}
+.graph .flowchart-link.hl {{ stroke-width: 3px !important; stroke-opacity: 1; }}
 .graph .hit {{ stroke: transparent !important; stroke-width: 14px !important; fill: none; pointer-events: stroke; cursor: pointer; }}
 .graph .node {{ cursor: pointer; }}
 td.num, th {{ font-variant-numeric: tabular-nums; }}
@@ -543,7 +576,7 @@ code {{ font-family: var(--mono); font-size: .86em; }}
   <section>
     <h2>Module graph</h2>
 {graphs}
-    <p class="legend">Green: new module. Red dashed: removed. Blue: changed, with lines +added −removed. Thick arrow: new import. Orange arrow: drift from the import rules. Dashed arrow: import removed. {rest} Click a module to highlight its imports; click an arrow to go to the line that created it.</p>
+    <p class="legend">Green: new module. Red dashed: removed. Blue: changed, with lines +added −removed. Thick arrow: new import. Orange arrow: drift from the import rules. Dashed arrow: import removed. The dashed lists are untouched modules that import, or are imported by, a touched one (×N: how many); their imports are unchanged, so they are listed instead of drawn, and each module's panel still lists every edge. {rest} Click a module to highlight its imports; click an arrow to go to the line that created it.</p>
     {outside}
   </section>
   <section>
@@ -561,8 +594,12 @@ code {{ font-family: var(--mono); font-size: .86em; }}
   </section>
 </main>
 <script type="application/json" id="bg-data">{data}</script>
-<script src="{cdn}"></script>
-<script>
+<script type="module">
+// One module, so the code below runs after both imports; a failed load leaves window.mermaid unset and the source shown.
+try {{
+  window.mermaid = (await import("{cdn}")).default;
+  window.mermaid.registerLayoutLoaders((await import("{elk}")).default);
+}} catch (e) {{ window.mermaid = undefined; }}
 (function () {{
   var root = document.documentElement;
   var dark = root.dataset.theme === "dark" || (root.dataset.theme !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
@@ -617,9 +654,11 @@ code {{ font-family: var(--mono); font-size: .86em; }}
   }}
 
   function arm(svg, first) {{
-    svg.querySelectorAll("path.flowchart-link").forEach(function (p) {{
-      var m = /_(\\d+)$/.exec(p.id), i = m && first + +m[1], link = m && data.links[i];
+    // Mermaid draws links in source order; their ids number per node pair, not per diagram, so the position is the index.
+    svg.querySelectorAll("path.flowchart-link").forEach(function (p, j) {{
+      var i = first + j, link = data.links[i];
       if (!link) return;
+      p.classList.add("k-" + link.kind);
       var hit = p.cloneNode(false);
       hit.removeAttribute("id"); hit.removeAttribute("marker-end"); hit.removeAttribute("style");
       hit.setAttribute("class", "hit"); hit.dataset.link = i;
@@ -629,8 +668,13 @@ code {{ font-family: var(--mono); font-size: .86em; }}
     }});
   }}
 
-  if (window.mermaid) mermaid.initialize({{ startOnLoad: false, securityLevel: "loose", theme: dark ? "dark" : "default", flowchart: {{ htmlLabels: true }} }});
-  graphs.forEach(function (graph, k) {{
+  // The base theme takes the page's own tokens, so --colors and dark mode reach the parts the CSS above does not name.
+  var css = getComputedStyle(root), v = function (k) {{ return css.getPropertyValue("--" + k).trim(); }};
+  if (window.mermaid) mermaid.initialize({{ startOnLoad: false, securityLevel: "loose", theme: "base", layout: "elk", elk: {{ nodePlacementStrategy: "NETWORK_SIMPLEX" }}, flowchart: {{ htmlLabels: true, nodeSpacing: 24, rankSpacing: 64 }},
+    themeVariables: {{ darkMode: dark, background: v("surface"), primaryColor: v("surface"), primaryBorderColor: v("rule"),
+                       primaryTextColor: v("ink"), lineColor: v("edge"), fontFamily: v("mono"), fontSize: "13px" }} }});
+  // Mermaid sizes each box from its text, so it measures after the web font has loaded, not the fallback.
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(function () {{ graphs.forEach(function (graph, k) {{
     if (!window.mermaid) {{ graph.textContent = "Mermaid did not load; the diagram source is in the page."; return; }}
     graph.addEventListener("click", function (ev) {{
       var hit = ev.target.closest(".hit");
@@ -639,7 +683,7 @@ code {{ font-family: var(--mono); font-size: .86em; }}
     }});
     var text = graph.closest(".view").querySelector(".mmd").textContent;
     mermaid.render("g" + k, text).then(function (r) {{ graph.innerHTML = r.svg; arm(graph.querySelector("svg"), +graph.dataset.first); }});
-  }});
+  }}); }});
 }})();
 </script>
 """

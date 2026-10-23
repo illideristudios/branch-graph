@@ -27,7 +27,27 @@ class DrawnTest(unittest.TestCase):
         self.assertEqual(shown, [("c",), ("t",), ("x",), ("z",)])
         self.assertEqual(rest, 1)
         mmd = render.mermaid(bd, {}, shown, rest)
-        self.assertEqual(mmd.count("-->") + mmd.count("==>"), 3)
+        self.assertEqual(mmd.count("-->") + mmd.count("==>"), 1)
+        self.assertEqual(render.context(bd, shown), ({("x",): 1, ("z",): 1}, {}))
+
+
+class ContextTest(unittest.TestCase):
+    def test_untouched_neighbours_are_listed_with_how_many_touched_modules_they_meet(self):
+        files = {f"{m}.py": (m,) for m in "abchu"}
+        base, head = d.Graph(files=dict(files)), d.Graph(files=dict(files))
+        for g in (base, head):
+            for src in "abc":
+                g.add(d.Edge((src,), ("h",), f"{src}.py", 1))
+            g.add(d.Edge(("u",), ("a",), "u.py", 1))
+        head.add(d.Edge(("a",), ("b",), "a.py", 2))
+        bd = d.diff(base, head, {"a.py": (1, 0), "b.py": (1, 0), "c.py": (1, 0)})
+        shown = [("a",), ("b",), ("c",), ("h",), ("u",)]
+        self.assertEqual(render.context(bd, shown), ({("u",): 1}, {("h",): 3}))
+        self.assertEqual([(e.src, e.dst) for e, _ in render.links(bd, shown)], [(("a",), ("b",))])
+        mmd = render.mermaid(bd, {}, shown, 0)
+        self.assertIn("<a href='#n-3'>h</a> <span class='facts'>×3</span>", mmd)
+        self.assertIn("usedby ~~~ n0", mmd)
+        self.assertNotIn("click n3 ", mmd)
 
 
 class BudgetTest(unittest.TestCase):
