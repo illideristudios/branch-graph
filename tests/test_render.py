@@ -50,6 +50,21 @@ class ContextTest(unittest.TestCase):
         self.assertNotIn("click n3 ", mmd)
 
 
+class HostileNameTest(unittest.TestCase):
+    def test_a_module_name_cannot_inject_markup_or_mermaid(self):
+        evil = '<img src=x onerror=alert(1)>"]\nclick'
+        files = {f"{m}.py": (m,) for m in ("a", evil, "u")}
+        base, head = d.Graph(files=dict(files)), d.Graph(files=dict(files))
+        for g in (base, head):
+            g.add(d.Edge(("u",), (evil,), "u.py", 1))
+        head.add(d.Edge(("a",), (evil,), "a.py", 1))
+        bd = d.diff(base, head, {"a.py": (1, 0)})
+        mmd = render.mermaid(bd, {}, [("a",), (evil,), ("u",)], 0)
+        self.assertNotIn("<img", mmd)
+        self.assertNotIn('"]\nclick', mmd)
+        self.assertIn("&lt;img src=x onerror=alert(1)&gt;&quot;] click", mmd)
+
+
 class BudgetTest(unittest.TestCase):
     """Context is added most-connected first while the drawn edges fit the budget; touched modules are always drawn."""
 
