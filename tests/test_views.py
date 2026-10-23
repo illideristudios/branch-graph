@@ -186,6 +186,10 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(render.summary(self.bd, {}, views=4), "nodes +0 −0 ~1 edges +1 −0 drift=0 views=4")
         self.assertEqual(render.summary(self.bd, {}, excluded=0, views=2), "nodes +0 −0 ~1 edges +1 −0 drift=0 excluded=0 views=2")
 
+    def test_outside_is_appended_only_when_some(self):
+        self.assertEqual(render.summary(self.bd, {}, outside=0), "nodes +0 −0 ~1 edges +1 −0 drift=0")
+        self.assertEqual(render.summary(self.bd, {}, views=2, outside=3), "nodes +0 −0 ~1 edges +1 −0 drift=0 views=2 outside=3")
+
 
 if __name__ == "__main__":
     unittest.main()

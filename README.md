@@ -60,15 +60,21 @@ their tests.
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m unittest discover -s tests
 ```
 
-Without `lizard`/`radon` importable, the metric-provider tests skip — and a
-skipped test is not a pass — so CI installs pinned versions
-(`lizard==1.24.1`, `radon==6.0.1`) and runs the same discovery command
-(`.github/workflows/tests.yml`: push-only, `contents: read`, checkout pinned
-to a commit SHA with `persist-credentials: false`, git-capable `python:3.14`
-container).
+Without `lizard`/`radon` importable, the metric-provider tests skip — and a skipped test is not a pass — so `requirements-dev.txt` pins them and both a local run and CI install from it (`.github/workflows/tests.yml`: push-only, `contents: read`, checkout pinned to a commit SHA with `persist-credentials: false`, git-capable `python:3.14` container).
+
+```
+I := requirements-dev.txt is installed      S := a metric-provider test skips
+P := the suite passes
+1.  ¬I → S        [the tests skip without lizard/radon]
+2.  S → ¬P        [a skipped test is not a pass]
+3.  P → I         [1, 2, contrapositive]
+∴   install requirements-dev.txt before every run, local or CI
+```
 
 ## License
 

@@ -54,10 +54,15 @@ def drift_count(verdicts: dict[str, str]) -> int:
     return sum(v == "drift" for v in verdicts.values())
 
 
-def summary(bd: BranchDiff, verdicts: dict[str, str], excluded: int | None = None, views: int | None = None) -> str:
+def summary(bd: BranchDiff, verdicts: dict[str, str], excluded: int | None = None, views: int | None = None, outside: int = 0) -> str:
     drift = drift_count(verdicts)
     line = f"nodes +{len(bd.added)} −{len(bd.removed)} ~{len(bd.changed)} edges +{len(bd.edges_added)} −{len(bd.edges_removed)} drift={drift}"
-    return line + (f" excluded={excluded}" if excluded is not None else "") + (f" views={views}" if views is not None else "")
+    return (line + (f" excluded={excluded}" if excluded is not None else "") + (f" views={views}" if views is not None else "")
+            + (f" outside={outside}" if outside else ""))
+
+
+def plural(n: int, noun: str) -> str:
+    return f"{n} {noun}" + ("" if n == 1 else "s")
 
 
 def touched(bd: BranchDiff) -> set[ModuleId]:
@@ -191,7 +196,7 @@ def mermaid(bd: BranchDiff, verdicts: dict[str, str], shown: list[ModuleId], res
         cls = ":::added" if m in bd.added else ":::removed" if m in bd.removed else ":::changed" if m in bd.changed else ""
         lines.append(f'  {nid}["{label}"]{cls}')
     if rest:
-        lines.append(f'  more["… {rest} more modules untouched"]:::more')
+        lines.append(f'  more["… {rest} more {"module" if rest == 1 else "modules"} untouched"]:::more')
     red = []
     for i, (e, kind) in enumerate(links(bd, shown)):
         lines.append(f"  {ids[e.src]} {ARROW[kind]} {ids[e.dst]}")
@@ -352,9 +357,10 @@ def _metrics_panel(report: Report, paths: set[str], anchors: Anchors) -> str:
 
 def page(bd: BranchDiff, title: str, subtitle: str, diagrams: list[tuple[str, str, list[ModuleId]]], verdicts: dict[str, str],
          notes: dict[str, str], hunks: dict[ModuleId, str], shown: list[ModuleId], rest: int,
-         colors: dict[str, dict[str, str]] | None = None, excluded: int | None = None, metrics: Report | None = None) -> str:
+         colors: dict[str, dict[str, str]] | None = None, excluded: int | None = None, metrics: Report | None = None,
+         outside: dict[str, tuple[int, int]] | None = None) -> str:
     """diagrams: (view title, Mermaid text, modules it draws); one untitled diagram when there are no views.
-    shown: every drawn module, one panel each."""
+    shown: every drawn module, one panel each. outside: {path: (+, −)} for changed files that belong to no module."""
     every_id = _ids(bd)
     ids = {m: f"n-{every_id[m]}" for m in shown}
     anchors = Anchors()
@@ -411,11 +417,20 @@ def page(bd: BranchDiff, title: str, subtitle: str, diagrams: list[tuple[str, st
     chips = [("added", f"+{len(bd.added)} modules"), ("removed", f"−{len(bd.removed)} modules"), ("changed", f"~{len(bd.changed)} changed"),
              ("context", f"+{len(bd.edges_added)} / −{len(bd.edges_removed)} edges"), ("drift", f"{sum(v == 'drift' for v in verdicts.values())} drift")]
     chips += [("context", f"{excluded} excluded")] if excluded is not None else []
+    outside = outside or {}
+    chips += [("context", f"{plural(len(outside), 'file')} outside the graph")] if outside else []
+    outside_html = (
+        f'<details class="outside"><summary>{plural(len(outside), "changed file")} outside the graph: not under the import root, '
+        f'or in no language branch-graph reads <span class="mono muted">+{sum(p for p, _ in outside.values())} '
+        f'−{sum(m for _, m in outside.values())}</span></summary><div class="metrics"><ul>'
+        + "".join(f'<li><span class="mono">{escape(path)}</span> <span class="mono muted">+{p} −{m}</span></li>'
+                  for path, (p, m) in sorted(outside.items()))
+        + "</ul></div></details>") if outside else ""
     return TEMPLATE.format(
         title=escape(title), subtitle=escape(subtitle), cdn=MERMAID_CDN, graphs="\n".join(graphs), table=table, details=details,
         metrics=_metrics_section(metrics, module_link) if metrics else "",
         chips="".join(f'<span class="pill {c}">{escape(t)}</span>' for c, t in chips),
-        rest=f"{rest} untouched modules not drawn." if rest else "",
+        rest=f"{plural(rest, 'untouched module')} not drawn." if rest else "", outside=outside_html,
         data=json.dumps(data).replace("</", "<\\/"),
         drift=f"{drift} {{ stroke: var(--drift) !important; }}" if drift else "",
         light=_vars((colors or PALETTE)["light"]), dark=_vars((colors or PALETTE)["dark"]),
@@ -490,6 +505,7 @@ pre.diff .meta {{ color: var(--muted); padding-left: 11ch; }}
 .view + .view {{ margin-top: 20px; }}
 .view h3 {{ font-size: .9rem; font-weight: 600; margin: 0 0 6px; }}
 .legend {{ font-size: .85rem; color: var(--muted); margin: 8px 0 0; }}
+.outside {{ margin-top: 12px; }}
 .focus {{ margin: 8px 0 0; display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }}
 .focus[hidden] {{ display: none; }}
 .focus button {{ font: inherit; font-size: .85rem; color: var(--muted); background: none; border: 1px solid var(--rule); border-radius: 999px; padding: 0 10px; cursor: pointer; }}
@@ -518,6 +534,7 @@ code {{ font-family: var(--mono); font-size: .86em; }}
     <h2>Module graph</h2>
 {graphs}
     <p class="legend">Green: new module. Red dashed: removed. Blue: changed, with lines +added −removed. Thick arrow: new import. Orange arrow: drift from the import rules. Dashed arrow: import removed. {rest} Click a module to highlight its imports; click an arrow to go to the line that created it.</p>
+    {outside}
   </section>
   <section>
     <h2>Import edges</h2>
