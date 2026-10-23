@@ -48,6 +48,10 @@ def collapse(graph: Graph, depth: int) -> Graph:
     return out
 
 
+# {path: (lines added, lines removed)}; None for a binary file, which git counts in no lines.
+Numstat = dict[str, tuple[int, int] | None]
+
+
 @dataclass
 class BranchDiff:
     base: Graph
@@ -57,18 +61,23 @@ class BranchDiff:
     changed: dict[ModuleId, tuple[int, int]]
     edges_added: list[Edge]
     edges_removed: list[Edge]
-    numstat: dict[str, tuple[int, int]]
+    numstat: Numstat
+
+    @property
+    def outside(self) -> Numstat:
+        """Changed files in no module of either revision: not under the import root, or not a module in a language read."""
+        return {p: s for p, s in self.numstat.items() if p not in self.base.files and p not in self.head.files}
 
 
-def diff(base: Graph, head: Graph, numstat: dict[str, tuple[int, int]]) -> BranchDiff:
-    """numstat: {path: (lines added, lines removed)} between the two revisions."""
+def diff(base: Graph, head: Graph, numstat: Numstat) -> BranchDiff:
+    """numstat: every changed file in the repository, so files outside the graph can be named."""
     both = base.nodes & head.nodes
     changed: dict[ModuleId, tuple[int, int]] = {}
-    for path, (plus, minus) in numstat.items():
+    for path, stat in numstat.items():
         module = head.files.get(path) or base.files.get(path)
-        if module in both and (plus or minus):
+        if module in both and stat and any(stat):
             p, m = changed.get(module, (0, 0))
-            changed[module] = (p + plus, m + minus)
+            changed[module] = (p + stat[0], m + stat[1])
     order = attrgetter("file", "line")
     return BranchDiff(
         base=base,

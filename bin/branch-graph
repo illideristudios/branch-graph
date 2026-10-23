@@ -57,9 +57,6 @@ def main(argv: list[str] | None = None) -> int:
     base = args.base or source.merge_base("origin/main", args.head)
     select = languages.selector(languages.load())
     bd = branch_graph(source, select, base, args.head, args.root, args.depth)
-    # Before --exclude: an excluded module is counted as excluded, not as outside the graph.
-    mapped = bd.base.files.keys() | bd.head.files.keys()
-    outside = {p: s for p, s in source.numstat(base, args.head, ".").items() if p not in mapped}
     excluded = None
     if args.exclude:
         bd, excluded = exclude(bd, args.exclude)
@@ -105,11 +102,11 @@ def main(argv: list[str] | None = None) -> int:
     changed_files = set(bd.numstat)
     hunks = {m: source.hunks(base, args.head, sorted(set(files_of.get(m, [])) & changed_files)) for m in shown}
 
-    args.out.write_text(render.page(bd, title, subtitle, diagrams, verdicts, notes, hunks, shown, rest, colors, excluded, report, outside))
+    args.out.write_text(render.page(bd, title, subtitle, diagrams, verdicts, notes, hunks, shown, rest, colors, excluded, report))
     for path, (_, mmd, _) in zip(files, diagrams):
         path.write_text(mmd)
 
-    print(render.summary(bd, verdicts, excluded, None if args.max_nodes is None else len(diagrams), len(outside)))
+    print(render.summary(bd, verdicts, excluded, None if args.max_nodes is None else len(diagrams)))
     for e in bd.edges_added:
         print(f"{e.key}  {e.file}:{e.line}  {verdicts[e.key]}")
     drift = render.drift_count(verdicts)
@@ -125,7 +122,9 @@ def main(argv: list[str] | None = None) -> int:
             "drift": drift,
             "excluded": excluded,
             "views": None if args.max_nodes is None else len(diagrams),
-            "outside": [{"path": p, "added": a, "removed": r} for p, (a, r) in sorted(outside.items())],
+            # added and removed are null for a binary file.
+            "outside": [{"path": p, "added": None if s is None else s[0], "removed": None if s is None else s[1]}
+                        for p, s in sorted(bd.outside.items())],
         }))
     return 1 if args.fail_on_drift and drift else 0
 

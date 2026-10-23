@@ -39,6 +39,16 @@ class NonAsciiPathTest(unittest.TestCase):
             self.assertIn("diff --git a/é.py b/é.py", source.hunks("HEAD~1", "HEAD", ["é.py"]))
 
 
+class BinaryNumstatTest(unittest.TestCase):
+    def test_a_binary_file_counts_no_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            git(tmp, "init", "-q", "-b", "main")
+            commit(tmp, {"a.py": "x = 1\n"}, "base")
+            Path(tmp, "logo.png").write_bytes(b"\x89PNG\x00\x01")
+            commit(tmp, {"a.py": "x = 2\n"}, "head")
+            self.assertEqual(GitSource(tmp).numstat("HEAD~1", "HEAD", "."), {"a.py": (1, 1), "logo.png": None})
+
+
 class ChangedLinesTest(unittest.TestCase):
     def test_base_and_head_line_numbers_per_file(self):
         with tempfile.TemporaryDirectory() as tmp:

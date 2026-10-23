@@ -33,7 +33,16 @@ The tool is `bin/branch-graph` two levels above this skill's base directory. Lan
    - `--coverage REPORT` (repeatable) reads a Cobertura, Clover or LCOV report of the head revision (`coverage xml`, `coverage lcov`, PHPUnit `--coverage-cobertura`/`--coverage-clover`, `llvm-cov export -format=lcov`). Branch-graph never runs tests. Module coverage is diff coverage: the share of changed, executable lines that ran. Function coverage covers the function's whole body.
    - `--dup-scope changed|modules|root` is where copies of changed code are looked for; the default `modules` scans the files of every module the branch touched. `root` is thorough but slow: the whole OpenEMR tree takes 92 s.
 
-   Stdout is one summary line (`nodes +a −r ~c edges +e −x drift=d`, plus ` excluded=n` with `--exclude`, ` views=k` with `--max-nodes`, and ` outside=f` when changed files belong to no module), then one line per new edge with the `file:line` that created it. A file is outside the graph when it is not under `--root` or no language module reads it (docs, config, tests in another tree); the page lists each with its `+a −r`, so the picture never hides part of the diff.
+   Stdout is one summary line (`nodes +a −r ~c edges +e −x drift=d`, plus ` excluded=n` with `--exclude`, ` views=k` with `--max-nodes`, and ` outside=f` when changed files belong to no module), then one line per new edge with the `file:line` that created it. A changed file is outside the graph when it is in no module of either revision: not under `--root`, or not a module in any language branch-graph reads (docs, config, `Package.swift`, tests in another tree). A file in a module `--exclude` dropped counts as excluded, not outside. The page lists each outside file with its `+a −r` (`binary` for a binary file), the first 200 of them, and `--json` lists every one, so the picture never hides part of the diff.
+
+   ```
+   F := a file the branch changed      U := F is under --root      M := a language module names F
+   X := F's module is excluded         O := F is outside the graph
+   1.  O ↔ ¬(U ∧ M)        [in no module of either revision]
+   2.  X → (U ∧ M)         [only a module can be excluded]
+   3.  X → ¬O              [2, 1]
+   ∴   excluded and outside never count the same file
+   ```
 
 2. **Write the notes.** For each new edge, one line on why it exists, read from the code at that `file:line`, into a JSON file: `{"app.web -> app.rag": "the chat route streams retrieved passages"}`.
 

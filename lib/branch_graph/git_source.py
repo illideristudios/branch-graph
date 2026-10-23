@@ -49,11 +49,12 @@ class GitSource:
                 out[path], pos = data[start : start + size].decode(errors="replace"), start + size + 1
         return out
 
-    def numstat(self, base: str, head: str, root: str) -> dict[str, tuple[int, int]]:
+    def numstat(self, base: str, head: str, root: str) -> dict[str, tuple[int, int] | None]:
+        """None for a binary file: git prints `-` for its counts."""
         out = {}
         for record in filter(None, self._git("diff", "--no-renames", "--numstat", "-z", base, head, "--", root).split("\0")):
             plus, minus, path = record.split("\t", 2)
-            out[path] = (int(plus) if plus != "-" else 0, int(minus) if minus != "-" else 0)
+            out[path] = None if plus == "-" else (int(plus), int(minus))
         return out
 
     def hunks(self, base: str, head: str, paths: list[str]) -> str:
