@@ -4,7 +4,7 @@ Draws a branch's diff as a before/after module import diagram — every module
 linked to the hunks that changed it, every new import edge linked to the
 `file:line` that created it — and checks new imports against an
 `import-rules` block, flagging drift. Languages plug in as modules under
-`lib/branch_graph/languages/`; Python, PHP and Swift ship. `--json` writes a
+`lib/branch_graph/languages/`; Python, PHP, Swift and Rust ship. `--json` writes a
 machine-readable summary and `--fail-on-drift` exits 1 on a drift verdict.
 Optional `lizard`/`radon` add complexity, duplication and coverage metrics as
 branch deltas.
@@ -46,7 +46,7 @@ Update: `claude plugin marketplace update branch-graph`, then reinstall.
 | Path | What it is |
 | --- | --- |
 | `bin/branch-graph` | The CLI (`python3`). |
-| `lib/branch_graph/` | The library: domain, ports, use case, renderers, `languages/` (Python, PHP, Swift), `providers/` (lizard, radon). |
+| `lib/branch_graph/` | The library: domain, ports, use case, renderers, `languages/` (Python, PHP, Swift, Rust), `providers/` (lizard, radon). |
 | `skills/branch-graph/` | `SKILL.md` — how a review runs the tool and reads the page. |
 | `tests/` | Stdlib `unittest` suite. |
 
