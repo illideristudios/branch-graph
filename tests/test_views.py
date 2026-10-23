@@ -186,6 +186,17 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(render.summary(self.bd, {}, views=4), "nodes +0 −0 ~1 edges +1 −0 drift=0 views=4")
         self.assertEqual(render.summary(self.bd, {}, excluded=0, views=2), "nodes +0 −0 ~1 edges +1 −0 drift=0 excluded=0 views=2")
 
+    def test_outside_is_appended_when_a_changed_file_is_in_no_module(self):
+        self.bd.numstat.update({"README.md": (1, 0), "logo.png": None})
+        self.assertEqual(render.summary(self.bd, {}, views=2), "nodes +0 −0 ~1 edges +1 −0 drift=0 views=2 outside=2")
+
+
+class PluralTest(unittest.TestCase):
+    def test_one_is_singular(self):
+        self.assertEqual([render.plural(n, "module") for n in (0, 1, 2)], ["0 modules", "1 module", "2 modules"])
+        bd = branch(new=[("a", "b")])
+        self.assertIn('more["… 1 more module untouched"]', render.mermaid(bd, {}, [mod("a"), mod("b")], 1))
+
 
 if __name__ == "__main__":
     unittest.main()

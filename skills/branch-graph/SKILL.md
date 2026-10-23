@@ -25,7 +25,7 @@ The tool is `bin/branch-graph` two levels above this skill's base directory. Lan
    - `--exclude GLOB` (repeatable) drops every module whose collapsed name matches, with its edges and diffs, before anything is drawn or counted: `--exclude 'tests.*' --exclude 'evals.*'`.
    - `--max-nodes N` (at least 3) splits the drawing into views of at most N modules each, written as `page-1.mmd`…`page-K.mmd` instead of `page.mmd`, all shown on `page.html`. Each touched module belongs to one view; a view grows through its touched neighbours, and a touched module drawn in another view's context is labelled `in view k`. Unrelated clusters are always separate views.
    - `--rules ARCHITECTURE.md` reads the first ```` ```import-rules ```` fence (one `A -> B` glob pair per line). With no fence, every verdict is `no rules`. Never write rules into a file to get a verdict.
-   - `--json PATH` writes a machine-readable summary with full base/head commit SHAs, added/removed/changed nodes, new edges with verdicts, removed edges with no verdict, drift count, excluded count and view count.
+   - `--json PATH` writes a machine-readable summary with full base/head commit SHAs, added/removed/changed nodes, new edges with verdicts, removed edges with no verdict, drift count, excluded count, view count, and `outside`: each changed file outside the graph with its lines added and removed.
    - `--fail-on-drift` needs a `--rules` file that holds an `import-rules` block and exits 1 when a new import has the verdict `drift`; the page and output are still written.
 
    - `--colors colors.json` overrides the palette, for the page and the diagram alike: `{"light": {"add": "#1f8a4c"}, "dark": {"bg": "#000000"}}`. The tokens are `bg surface ink muted rule edge accent accent-bg add add-bg del del-bg drift drift-bg hdr`; an unknown token, or a value holding `;`, `:`, braces, quotes or angle brackets, is a usage error. With `--max-nodes` it colors every view.
@@ -33,13 +33,22 @@ The tool is `bin/branch-graph` two levels above this skill's base directory. Lan
    - `--coverage REPORT` (repeatable) reads a Cobertura, Clover or LCOV report of the head revision (`coverage xml`, `coverage lcov`, PHPUnit `--coverage-cobertura`/`--coverage-clover`, `llvm-cov export -format=lcov`). Branch-graph never runs tests. Module coverage is diff coverage: the share of changed, executable lines that ran. Function coverage covers the function's whole body.
    - `--dup-scope changed|modules|root` is where copies of changed code are looked for; the default `modules` scans the files of every module the branch touched. `root` is thorough but slow: the whole OpenEMR tree takes 92 s.
 
-   Stdout is one summary line (`nodes +a −r ~c edges +e −x drift=d`, plus ` excluded=n` with `--exclude` and ` views=k` with `--max-nodes`), then one line per new edge with the `file:line` that created it.
+   Stdout is one summary line (`nodes +a −r ~c edges +e −x drift=d`, plus ` excluded=n` with `--exclude`, ` views=k` with `--max-nodes`, and ` outside=f` when changed files belong to no module), then one line per new edge with the `file:line` that created it. A changed file is outside the graph when it is in no module of either revision: not under `--root`, or not a module in any language branch-graph reads (docs, config, `Package.swift`, tests in another tree). A file in a module `--exclude` dropped counts as excluded, not outside. The page lists each outside file with its `+a −r` (`binary` for a binary file), the first 200 of them, and `--json` lists every one, so the picture never hides part of the diff.
+
+   ```
+   F := a file the branch changed      U := F is under --root      M := a language module names F
+   X := F's module is excluded         O := F is outside the graph
+   1.  O ↔ ¬(U ∧ M)        [in no module of either revision]
+   2.  X → (U ∧ M)         [only a module can be excluded]
+   3.  X → ¬O              [2, 1]
+   ∴   excluded and outside never count the same file
+   ```
 
 2. **Write the notes.** For each new edge, one line on why it exists, read from the code at that `file:line`, into a JSON file: `{"app.web -> app.rag": "the chat route streams retrieved passages"}`.
 
 3. **Run it again** with `--notes <that file>`, so the why column is filled.
 
-4. **Render-check.** Run `mermaid-check.py <scratch>/page.mmd` (each `page-K.mmd` with `--max-nodes`) (from the `mermaid-system-design` plugin, installed from its own marketplace: the newest `~/.claude/plugins/cache/mermaid-system-design/mermaid-system-design/*/skills/mermaid-system-design/scripts/mermaid-check.py`). It must exit 0. A diagram that did not render is not published. If `mermaid-system-design` is not installed, skip the render check and say so in the summary.
+4. **Render-check.** Run `mermaid-check.py <scratch>/page.mmd` (each `page-K.mmd` with `--max-nodes`) (from the `mermaid-system-design` plugin, whichever marketplace installed it: the newest `~/.claude/plugins/cache/*/mermaid-system-design/*/skills/mermaid-system-design/scripts/mermaid-check.py`). It must exit 0. A diagram that did not render is not published. If `mermaid-system-design` is not installed, skip the render check and say so in the summary.
 
 5. **Publish** `page.html` with the Artifact tool, and put the link in the pull request body. For a PR opened before the page existed, add the link with `gh pr edit <n> --body-file`.
 

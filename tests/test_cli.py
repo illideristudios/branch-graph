@@ -170,7 +170,8 @@ class CliTest(unittest.TestCase):
         report = Path(self.tmp.name, "summary.json")
         stdout = self.run_cli("--json", str(report))
         data = json.loads(report.read_text())
-        self.assertEqual(set(data), {"base", "head", "nodes", "edges", "drift", "excluded", "views"})
+        self.assertEqual(set(data), {"base", "head", "nodes", "edges", "drift", "excluded", "views", "outside"})
+        self.assertEqual(data["outside"], [])
         self.assertEqual(data["nodes"], {"added": ["c"], "removed": [], "changed": ["b"]})
         self.assertEqual(data["edges"]["added"], [
             {"src": "c", "dst": "a", "file": "c.py", "line": 2, "verdict": "no rules"},
@@ -188,6 +189,26 @@ class CliTest(unittest.TestCase):
             sha = subprocess.run(["git", "-C", str(self.repo), "rev-parse", revision],
                                  capture_output=True, text=True, check=True).stdout.strip()
             self.assertEqual(data[key], sha)
+
+    def test_changed_files_outside_the_graph_are_reported(self):
+        Path(self.repo, "docs").mkdir()
+        Path(self.repo, "logo.png").write_bytes(b"\x89PNG\x00\x01")
+        commit(self.repo, {"notes.md": "one\ntwo\n", "docs/d.py": "import a\n"}, "outside")
+        report = Path(self.tmp.name, "summary.json")
+        argv = [sys.executable, str(BIN), "--repo", str(self.repo), "--base", "base", "--root", "docs", "--out", str(self.out),
+                "--json", str(report)]
+        lines = subprocess.run(argv, capture_output=True, text=True, check=True).stdout.splitlines()
+        self.assertEqual(lines[0], "nodes +1 −0 ~0 edges +0 −0 drift=0 outside=4")
+        self.assertEqual(json.loads(report.read_text())["outside"], [
+            {"path": "b.py", "added": 2, "removed": 1},
+            {"path": "c.py", "added": 3, "removed": 0},
+            {"path": "logo.png", "added": None, "removed": None},
+            {"path": "notes.md", "added": 2, "removed": 0},
+        ])
+        page = self.out.read_text()
+        self.assertIn("4 changed files outside the graph", page)
+        self.assertIn('<span class="mono">notes.md</span> <span class="mono muted">+2 −0</span>', page)
+        self.assertIn('<span class="mono">logo.png</span> <span class="mono muted">binary</span>', page)
 
     def test_json_shas_are_commits_for_an_annotated_tag(self):
         base_sha = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "base^{commit}"],

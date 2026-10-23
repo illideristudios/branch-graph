@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dup-scope", choices=("changed", "modules", "root"), default="modules",
                    help="where copies of changed code are looked for (default: the modules the branch touched)")
     p.add_argument("--out", type=Path, required=True, help="page.html; page.mmd is written beside it")
-    p.add_argument("--json", type=Path, help="machine-readable summary: nodes, new and removed edges with verdicts, drift count")
+    p.add_argument("--json", type=Path, help="machine-readable summary: nodes, new and removed edges with verdicts, drift count, changed files outside the graph")
     p.add_argument("--fail-on-drift", action="store_true", help="exit 1 when a new import has the verdict drift; the page and output are still written")
     args = p.parse_args(argv)
 
@@ -122,6 +122,9 @@ def main(argv: list[str] | None = None) -> int:
             "drift": drift,
             "excluded": excluded,
             "views": None if args.max_nodes is None else len(diagrams),
+            # added and removed are null for a binary file.
+            "outside": [{"path": p, "added": None if s is None else s[0], "removed": None if s is None else s[1]}
+                        for p, s in sorted(bd.outside.items())],
         }))
     return 1 if args.fail_on_drift and drift else 0
 

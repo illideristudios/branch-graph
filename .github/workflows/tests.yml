@@ -20,5 +20,5 @@ jobs:
           # Nothing after the checkout uses the token, so it is not left in .git/config for the suite to read.
           persist-credentials: false
       # The optional metrics providers; without them the suite skips tests, and a skipped test is not a pass.
-      - run: pip install lizard==1.24.1 radon==6.0.1
+      - run: pip install -r requirements-dev.txt
       - run: python3 -m unittest discover -s tests

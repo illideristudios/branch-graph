@@ -53,6 +53,12 @@ class DiffTest(unittest.TestCase):
         self.assertEqual([(e.src, e.dst, e.file, e.line) for e in self.bd.edges_added], [(("app", "n"), A, "app/n.py", 2)])
         self.assertEqual([(e.src, e.dst, e.file, e.line) for e in self.bd.edges_removed], [(B, C, "app/b.py", 4)])
 
+    def test_files_in_no_module_are_outside_and_a_binary_one_counts_no_lines(self):
+        bd = d.diff(self.base, self.head, {"app/b.py": (5, 2), "README.md": (2, 1), "logo.png": None})
+        self.assertEqual(bd.outside, {"README.md": (2, 1), "logo.png": None})
+        self.assertEqual(bd.changed, {B: (5, 2)})
+        self.assertEqual(self.bd.outside, {})
+
 
 class ExcludeTest(unittest.TestCase):
     """fnmatch globs on the collapsed name; an excluded module and every edge touching it leave both revisions."""
@@ -73,6 +79,11 @@ class ExcludeTest(unittest.TestCase):
 
     def test_a_module_counts_once_whichever_revisions_hold_it(self):
         self.assertEqual(d.exclude(self.bd, ["app.*"])[1], 4)
+
+    def test_an_excluded_module_is_excluded_not_outside(self):
+        self.bd.numstat["README.md"] = (1, 0)
+        bd, _ = d.exclude(self.bd, ["app.n", "app.c.*"])
+        self.assertEqual(bd.outside, {"README.md": (1, 0)})
 
     def test_no_globs_or_no_match_changes_nothing(self):
         for globs in ([], ["tests.*"]):

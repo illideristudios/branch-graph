@@ -27,7 +27,8 @@ def build_graph(source: RevisionSource, select: Selector, rev: str, root: str) -
 
 def branch_graph(source: RevisionSource, select: Selector, base: str, head: str, root: str, depth: int) -> BranchDiff:
     graphs = [collapse(build_graph(source, select, rev, root), depth) for rev in (base, head)]
-    return diff(*graphs, source.numstat(base, head, root))
+    # The whole repository, not just root: a changed file outside the graph is still part of the branch.
+    return diff(*graphs, source.numstat(base, head, "."))
 
 
 def _attribute(funcs: list[Func], text: dict[str, str], select: Selector) -> list[Func]:
