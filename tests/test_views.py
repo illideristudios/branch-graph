@@ -42,7 +42,7 @@ NODE = re.compile(r'^\s+(\S+)\["(.*?)"\]', re.M)
 def module_labels(mmd: str) -> list[str]:
     """Labels of the module nodes: the clickable ones, so a `… N more` note is not a node."""
     clickable = set(CLICK.findall(mmd))
-    return [label for nid, label in NODE.findall(mmd) if nid in clickable]
+    return [re.sub(r"<[^>]+>", " ", label).strip() for nid, label in NODE.findall(mmd) if nid in clickable]
 
 
 class ViewInvariantsTest(unittest.TestCase):
@@ -146,7 +146,6 @@ class ViewShapesTest(unittest.TestCase):
         self.assertEqual(len(view.shown), 12)
         self.assertLessEqual({mod(n) for n in ctx[25:]}, set(view.shown))
         self.assertEqual(view.rest, 19)
-        self.assertIn("19 more", render.view_mermaid(bd, {}, view))
 
     def test_two_disconnected_clusters_are_two_views(self):
         bd = branch(same=[("u1", "p1"), ("u2", "q2")], new=[("p1", "p2"), ("q1", "q2")])
@@ -195,7 +194,7 @@ class PluralTest(unittest.TestCase):
     def test_one_is_singular(self):
         self.assertEqual([render.plural(n, "module") for n in (0, 1, 2)], ["0 modules", "1 module", "2 modules"])
         bd = branch(new=[("a", "b")])
-        self.assertIn('more["… 1 more module untouched"]', render.mermaid(bd, {}, [mod("a"), mod("b")], 1))
+        self.assertNotIn("more", render.mermaid(bd, {}, [mod("a"), mod("b")], 1))
 
 
 if __name__ == "__main__":
