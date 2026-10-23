@@ -1,7 +1,7 @@
 {
   "name": "branch-graph",
   "description": "Draws a branch's diff as a before/after module import diagram, each module linked to its hunks, new imports checked against an import-rules block. Languages plug in as modules; Python, PHP and Swift ship. --json writes a machine-readable summary; --fail-on-drift exits 1 on a drift verdict. Changed files outside the graph are listed, never hidden.",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "author": {
     "name": "Zach Gardner",
     "email": "locriani@gmail.com"
