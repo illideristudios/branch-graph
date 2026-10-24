@@ -31,16 +31,17 @@ The tool is `bin/branch-graph` two levels above this skill's base directory. Lan
    - `--depth` is how many module segments make one box: 2 for a packaged tree, 1 for a flat one.
    - PHP: a file is named by its `namespace` plus filename, or by its path under `--root` when it declares none. So `--root .` shows legacy code using namespaced code, and `--depth 2` gives vendor + package (`OpenEMR.Common`). Edges are `use` statements matched exactly, not `require`/`include`, `use function`, or inline `\Fq\Names` (on the OpenEMR fork the last is +2% module edges at depth 2).
    - Swift: a file belongs to its target (the directory under `Sources/` or `Tests/`, else the first directory under `--root`), and `import` lines name targets; system frameworks are dropped. `Package.swift` is not a module.
-   - Rust: a file is named by its crate (the directory holding its nearest `src/`, else its `tests/`, `benches/` or `examples/`, with hyphens read as underscores, and `crate` when that is `--root` itself) plus its path below that. `lib.rs` and `main.rs` are the crate itself and `mod.rs` is its directory, so `--depth 2` gives crate + top-level module. Edges come from `use` trees, with `crate::`, `super::` and `self::` resolved; inside an inline `mod tests { … }`, `super::` is the file's own module. A binary or test of a root crate reaches its library under any package name, when the path lands on a module below the root. Inline `crate::x::f()` paths, `extern crate`, and a `[package] name` that differs from the folder are not read. `build.rs` is not a module.
+   - Rust: a file is named by its crate plus its path below the crate's tree. The crate is the directory holding the file's nearest `src/` (else its `tests/`, `benches/` or `examples/`), named by that directory's `Cargo.toml` (`[lib] name`, else `[package] name`), else by the folder (`crate` at the repository root), with hyphens read as underscores. `lib.rs` and `main.rs` are the crate itself and `mod.rs` is its directory, so `--depth 2` gives crate + top-level module. Edges come from `use` trees, with `crate::`, `super::` and `self::` resolved; inside an inline `mod tests { … }`, `super::` is the file's own module. Inline `crate::x::f()` paths, `extern crate`, and a `[lib] path` or `[[bin]] path` outside the standard layout are not read. `build.rs` is not a module.
 
      ```
-     f := a .rs file      c := the directory holding f's nearest src/, else its tests/, benches/ or examples/
+     f := a .rs file      d := the directory holding f's nearest src/, else its tests/, benches/ or examples/
+     c := d's Cargo.toml [lib] name, else its [package] name, else d's folder name ("crate" at the repo root)
      S := f is under src/      B := f is under src/bin/      T := f is under tests/, benches/ or examples/ only
      1.  S → name(f) = c + its path under src/; lib.rs, main.rs = c; x/mod.rs = x   [module_of]
      2.  T → name(f) = c + that tree + its path; x/mod.rs, x/main.rs = x          [module_of]
      3.  (B ∨ T) → crate:: in f names f's own target, not c's library           [each is its own crate]
      4.  f = build.rs → f is no module                                         [module_of]
-     5.  (B ∨ T) ∧ c = --root → use p::m names crate.m when crate.m is a module   [the package name is unseen]
+     5.  `use c::…` in any file names c's modules                               [1, and c is the name importers write]
      ∴   every Rust file has one name, and crate:: points into the crate f compiles in
      ```
    - `--exclude GLOB` (repeatable) drops every module whose collapsed name matches, with its edges and diffs, before anything is drawn or counted: `--exclude 'tests.*' --exclude 'evals.*'`.

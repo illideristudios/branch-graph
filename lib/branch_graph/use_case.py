@@ -15,7 +15,7 @@ Selector = Callable[[str], "LanguageModule | None"]
 
 
 def build_graph(source: RevisionSource, select: Selector, rev: str, root: str) -> Graph:
-    owners = {path: lang for path in source.files(rev, root) if (lang := select(path))}
+    owners = _configured(source, rev, {path: lang for path in source.files(rev, root) if (lang := select(path))})
     text = source.read_all(rev, list(owners))
     graph = Graph(files={path: m for path, lang in owners.items() if (m := lang.module_of(path, root, text[path]))})
     known = graph.nodes
@@ -23,6 +23,18 @@ def build_graph(source: RevisionSource, select: Selector, rev: str, root: str) -
         for dst, line in owners[path].imports(path, module, text[path], known):
             graph.add(Edge(module, dst, path, line))
     return graph
+
+
+def _configured(source: RevisionSource, rev: str, owners: dict[str, LanguageModule]) -> dict[str, LanguageModule]:
+    """Each language that names modules from a manifest (Rust's Cargo.toml) swapped for a copy that has read them all."""
+    langs = {lang for lang in owners.values() if hasattr(lang, "manifest")}
+    if not langs:
+        return owners
+    # The whole repository, not just root: a crate's manifest sits beside its src/, which may be the root itself.
+    every = source.files(rev, ".")
+    done = {lang: lang.configured(source.read_all(rev, [p for p in every if p.rsplit("/", 1)[-1] == lang.manifest]))
+            for lang in langs}
+    return {path: done.get(lang, lang) for path, lang in owners.items()}
 
 
 def branch_graph(source: RevisionSource, select: Selector, base: str, head: str, root: str, depth: int) -> BranchDiff:

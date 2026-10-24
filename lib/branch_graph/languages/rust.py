@@ -1,13 +1,15 @@
 """Rust: a file's module is its crate plus its path under `src/`, and `use` trees name modules.
 
-The crate is the directory holding the file's nearest `src/` (else its `tests/`, `benches/` or `examples/`), hyphens read
-as underscores. `lib.rs` and `main.rs` are the crate itself, a `mod.rs` is its directory, and `build.rs` is not a module.
-A `src/bin/` binary and a test, bench or example target are crates of their own to `crate::`.
+The crate is named by its Cargo.toml (`[lib] name`, else `[package] name`), else by the directory holding the file's
+nearest `src/` (else its `tests/`, `benches/` or `examples/`); hyphens read as underscores. `lib.rs` and `main.rs` are
+the crate itself, a `mod.rs` is its directory, and `build.rs` is not a module. A `src/bin/` binary and a test, bench or
+example target are crates of their own to `crate::`.
 """
 
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import PurePosixPath
 from typing import Iterator
 
@@ -56,7 +58,8 @@ def _expand(tree: str) -> list[ModuleId]:
     if i < 0:
         return [tuple(s for s in tree.split("::") if s)]
     prefix = tuple(s for s in tree[:i].split("::") if s)
-    inner, items, depth, start = tree[i + 1 : tree.rindex("}")], [], 0, 0
+    close = tree.rfind("}")  # missing in a file that does not compile; read to the end rather than fail the run
+    inner, items, depth, start = tree[i + 1 : close if close > i else len(tree)], [], 0, 0
     for j, ch in enumerate(inner):
         depth += (ch == "{") - (ch == "}")
         if ch == "," and depth == 0:
@@ -77,13 +80,31 @@ def _locate(parts: tuple[str, ...]) -> int | None:
     return src[-1] if src else next((i for i, s in enumerate(dirs) if s in TREES), None)
 
 
-def _crate_len(parts: tuple[str, ...]) -> int:
-    """How many leading segments of a file's module are its crate: 3 for a binary or target (`app.bin.tool`), else 1."""
+def _crate(parts: tuple[str, ...], module: ModuleId) -> tuple[ModuleId, bool]:
+    """The module `crate::` names in a file, and whether the file is that crate's root file, whose `mod`s are siblings.
+
+    `tests/smoke.rs` is the root of crate `app.tests` (so `mod common;` is `tests/common/mod.rs`); `tests/e2e/main.rs`
+    and the files beside it are crate `app.tests.e2e`; `src/bin/` binaries follow the same rule one level down.
+    """
     i = _locate(parts)
     if i is None:
-        return 1
-    below = parts[i + 1 :]
-    return 3 if parts[i] != "src" or (below[0] == "bin" and len(below) > 1) else 1
+        return module[:1], False
+    tree, below = parts[i], parts[i + 1 :]
+    if tree == "src" and (below[0] != "bin" or len(below) == 1):
+        return module[:1], False
+    if len(below) == (2 if tree == "src" else 1):
+        return module[:2], True
+    return module[:3], False
+
+
+def _crate_name(manifest: str) -> str | None:
+    """The name a Cargo.toml's crate is imported by: `[lib] name`, else `[package] name`; None for a workspace root."""
+    try:
+        data = tomllib.loads(manifest)
+    except tomllib.TOMLDecodeError:
+        return None
+    name = data.get("lib", {}).get("name") or data.get("package", {}).get("name")
+    return name if isinstance(name, str) else None
 
 
 def _impl_name(header: str) -> str:
@@ -94,29 +115,41 @@ def _impl_name(header: str) -> str:
         if depth == 0 and not ch.isspace():
             rest = header[i + 1 :] if ch == ">" else header[i:]
             break
-    target = re.split(r"\bfor\b", re.split(r"\bwhere\b", rest)[0])[-1]
+    head = re.split(r"\bwhere\b", rest)[0]
+    # The trait's `for`, not a higher-ranked `for<'a>` nested inside the type's generics.
+    cuts = [m.end() for m in re.finditer(r"\bfor\b", head) if head[: m.start()].count("<") == head[: m.start()].count(">")]
+    target = head[cuts[-1] :] if cuts else head
     m = re.match(r"[\s&*]*(?:(?:mut|const|dyn)\s+)*(?:\w+::)*(\w+)", target)
     return m.group(1) if m else target.strip()
 
 
 class RustModule:
     name = "rust"
+    manifest = "Cargo.toml"
+
+    def __init__(self, names: dict[str, str] | None = None):
+        self.names = names or {}  # crate directory -> the name its Cargo.toml gives it
+
+    def configured(self, manifests: dict[str, str]) -> RustModule:
+        """A copy that names each crate by its Cargo.toml rather than its folder."""
+        return RustModule({str(PurePosixPath(p).parent): n for p, text in manifests.items() if (n := _crate_name(text))})
 
     def claims(self, path: str) -> bool:
         return path.endswith(".rs")
 
-    # ponytail: the crate is named after its directory ("crate" at the root), not Cargo.toml's `[package] name`; a crate
-    # whose name differs from its folder misses the edges into it. Upgrade path: `cargo metadata --format-version 1`.
+    # ponytail: a crate's directory is found from the standard layout, not Cargo.toml's `[lib] path` or `[[bin]] path`;
+    # a crate with custom source paths is named by folder. Upgrade path: `cargo metadata --format-version 1`.
     def module_of(self, path: str, root: str, source: str = "") -> ModuleId | None:
         p = PurePosixPath(path)
         if p.name == "build.rs":
             return None
-        parts = (p.relative_to(root) if root not in ("", ".") else p).with_suffix("").parts
-        i = _locate(parts)
+        full = p.with_suffix("").parts
+        i = _locate(full)
         if i is None:
+            parts = (p.relative_to(root) if root not in ("", ".") else p).with_suffix("").parts
             return parts[:-1] if parts[-1] == "mod" and len(parts) > 1 else parts
-        crate = (parts[i - 1] if i else PurePosixPath(root).name or "crate").replace("-", "_")
-        tree, below = parts[i], parts[i + 1 :]
+        crate = (self.names.get("/".join(full[:i]) or ".") or (full[i - 1] if i else "crate")).replace("-", "_")
+        tree, below = full[i], full[i + 1 :]
         if tree == "src" and below in (("lib",), ("main",)):
             return (crate,)
         if below[-1] == "mod" or (below[-1] == "main" and len(below) > 1 and (tree != "src" or below[0] == "bin")):
@@ -127,23 +160,23 @@ class RustModule:
     # for `crate::`/`super::` paths too, if reviews show edges missing.
     def imports(self, path: str, module: ModuleId, source: str, known: set[ModuleId]) -> Iterator[tuple[ModuleId, int]]:
         text = _blank(source)
-        mods = _braces.ranges(source, MOD, _blank)
-        crate = module[: _crate_len(PurePosixPath(path).with_suffix("").parts)]
+        mods = _braces.ranges(text, MOD, str)
+        crate, root_file = _crate(PurePosixPath(path).with_suffix("").parts, module)
         for m in USE.finditer(text):
-            tree = re.sub(r"\s+", "", re.sub(r"\s+as\s+\w+", "", m.group(2)))
+            tree = re.sub(r"\s+", "", re.sub(r"\s+as\s+\w+", "", m.group(2))).replace("r#", "")
             line = text.count("\n", 0, m.start(1)) + 1
             # An inline `mod tests { … }` sits one level below the file's module, for `super::` and `self::`.
-            here = module + tuple(name for name, first, last in mods if first <= line <= last)
+            here = (crate if root_file else module) + tuple(name for name, first, last in mods if first <= line <= last)
             for parts in _expand(tree):
                 parts = parts[:1] + tuple(s for s in parts[1:] if s not in ("self", "*"))
                 if not parts:
                     continue
-                # (path, shortest acceptable hit): a path relative to this module must land below it.
+                # (path, shortest acceptable hit): a relative path must land below this module, and none leaves the crate.
                 if parts[0] == "crate":
-                    tries = [(crate + parts[1:], 1)]
+                    tries = [(crate + parts[1:], len(crate))]
                 elif parts[0] == "super":
                     n = next((i for i, s in enumerate(parts) if s != "super"), len(parts))
-                    tries = [(here[: max(len(here) - n, 1)] + parts[n:], 1)]
+                    tries = [(here[: max(len(here) - n, 1)] + parts[n:], len(crate))]
                 elif parts[0] == "self":
                     tries = [(here + parts[1:], len(here) + 1)]
                 elif tree.startswith("::"):
@@ -151,9 +184,6 @@ class RustModule:
                 else:
                     # 2018 uniform paths: a child module of this one first, else another crate.
                     tries = [(here + parts, len(here) + 1), (parts, 1)]
-                    if len(crate) == 3 and crate[0] == "crate" and parts[0] not in ("std", "core", "alloc"):
-                        # A root crate's binaries and tests name its library by a package name module_of cannot see.
-                        tries.append((crate[:1] + parts[1:], 2))
                 for cand, floor in tries:
                     hit = _longest_known(cand, known)
                     if hit and len(hit) >= floor and hit != module:
@@ -161,8 +191,9 @@ class RustModule:
                         break
 
     def classes(self, source: str) -> list[tuple[str, int, int]]:
-        impls = [(_impl_name(header), first, last) for header, first, last in _braces.ranges(source, IMPL, _blank)]
-        return sorted(_braces.ranges(source, TYPE, _blank) + impls, key=lambda r: r[1])
+        text = _blank(source)
+        impls = [(_impl_name(header), first, last) for header, first, last in _braces.ranges(text, IMPL, str)]
+        return sorted(_braces.ranges(text, TYPE, str) + impls, key=lambda r: r[1])
 
 
 MODULE = RustModule()
