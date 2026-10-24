@@ -8,7 +8,11 @@ from .domain import ModuleId
 
 
 class LanguageModule(Protocol):
-    """One language. A new language is a new file in `languages/` exposing `MODULE`."""
+    """One language. A new language is a new file in `languages/` exposing `MODULE`.
+
+    A language that names modules from a manifest also declares `manifest` (a file name such as `Cargo.toml`) and
+    `configured(texts)`, which returns a copy that has read every such file of the revision, keyed by path.
+    """
 
     name: str
 

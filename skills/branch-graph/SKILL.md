@@ -7,7 +7,7 @@ description: Use when a branch or pull request is opened, or when someone asks f
 
 Draws a branch's diff at module level: modules added (green), removed (red, dashed) and changed (`+N −M` lines), import edges added (thick) and removed (dashed), and drift (orange) where an `import-rules` block exists and no rule allows a new edge. Clicking a module highlights its imports; its panel lists every connection both ways and its diff, file by file with line numbers. Every arrow and every edge row links to the line that created it. It reads both revisions with `git ls-tree` and `git cat-file`, so nothing is checked out.
 
-The tool is `bin/branch-graph` two levels above this skill's base directory. Languages are modules in `lib/branch_graph/languages/`; Python, PHP and Swift ship.
+The tool is `bin/branch-graph` two levels above this skill's base directory. Languages are modules in `lib/branch_graph/languages/`; Python, PHP, Swift and Rust ship.
 
 ## Steps
 
@@ -17,11 +17,33 @@ The tool is `bin/branch-graph` two levels above this skill's base directory. Lan
    python3 <base>/../../bin/branch-graph --repo <repo> --root <import root> --depth 2 --out <scratch>/page.html
    ```
 
-   - `--base` defaults to `git merge-base origin/main HEAD`, and `--head` to `HEAD`. For a merged PR, pass `--base <merge>^1 --head <merge>^2`.
+   - `--base` defaults to `git merge-base origin/main HEAD`, and `--head` to `HEAD`. For a merged PR, pass `--base $(git merge-base <merge>^1 <merge>^2) --head <merge>^2`. Passing `<merge>^1` itself as the base also shows every PR merged to main after the branch began, reversed, as if this branch had removed them.
+
+     ```
+     M := a merge commit      B := the branch's fork point, git merge-base M^1 M^2
+     D(x) := the diff from x to M^2 is only the branch's own work
+     1.  M^1 = B + the work of PRs merged after the branch began   [git history]
+     2.  D(B)                                                     [B is where the branch started]
+     3.  ¬D(M^1) whenever another PR merged in that time          [1: that work shows up reversed]
+     ∴   base = B, not M^1
+     ```
    - `--root` is the directory imports are resolved from (`agent` in the OpenEMR fork, `scripts` in chief-of-stuff).
    - `--depth` is how many module segments make one box: 2 for a packaged tree, 1 for a flat one.
    - PHP: a file is named by its `namespace` plus filename, or by its path under `--root` when it declares none. So `--root .` shows legacy code using namespaced code, and `--depth 2` gives vendor + package (`OpenEMR.Common`). Edges are `use` statements matched exactly, not `require`/`include`, `use function`, or inline `\Fq\Names` (on the OpenEMR fork the last is +2% module edges at depth 2).
    - Swift: a file belongs to its target (the directory under `Sources/` or `Tests/`, else the first directory under `--root`), and `import` lines name targets; system frameworks are dropped. `Package.swift` is not a module.
+   - Rust: a file is named by its crate plus its path below the crate's tree. The crate is the directory holding the file's nearest `src/` (else its `tests/`, `benches/` or `examples/`), named by that directory's `Cargo.toml` (`[lib] name`, else `[package] name`), else by the folder (`crate` at the repository root), with hyphens read as underscores. `lib.rs` and `main.rs` are the crate itself and `mod.rs` is its directory, so `--depth 2` gives crate + top-level module. Edges come from `use` trees, with `crate::`, `super::` and `self::` resolved; inside an inline `mod tests { … }`, `super::` is the file's own module. Inline `crate::x::f()` paths, `extern crate`, and a `[lib] path` or `[[bin]] path` outside the standard layout are not read. `build.rs` is not a module.
+
+     ```
+     f := a .rs file      d := the directory holding f's nearest src/, else its tests/, benches/ or examples/
+     c := d's Cargo.toml [lib] name, else its [package] name, else d's folder name ("crate" at the repo root)
+     S := f is under src/      B := f is under src/bin/      T := f is under tests/, benches/ or examples/ only
+     1.  S → name(f) = c + its path under src/; lib.rs, main.rs = c; x/mod.rs = x   [module_of]
+     2.  T → name(f) = c + that tree + its path; x/mod.rs, x/main.rs = x          [module_of]
+     3.  (B ∨ T) → crate:: in f names f's own target, not c's library           [each is its own crate]
+     4.  f = build.rs → f is no module                                         [module_of]
+     5.  `use c::…` in any file names c's modules                               [1, and c is the name importers write]
+     ∴   every Rust file has one name, and crate:: points into the crate f compiles in
+     ```
    - `--exclude GLOB` (repeatable) drops every module whose collapsed name matches, with its edges and diffs, before anything is drawn or counted: `--exclude 'tests.*' --exclude 'evals.*'`.
    - `--max-nodes N` (at least 3) splits the drawing into views of at most N modules each, written as `page-1.mmd`…`page-K.mmd` instead of `page.mmd`, all shown on `page.html`. Each touched module belongs to one view; a view grows through its touched neighbours, and a touched module drawn in another view's context is labelled `in view k`. Unrelated clusters are always separate views.
    - `--rules ARCHITECTURE.md` reads the first ```` ```import-rules ```` fence (one `A -> B` glob pair per line). With no fence, every verdict is `no rules`. Never write rules into a file to get a verdict.

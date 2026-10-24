@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Callable
 
 # Strings and comments, blanked before braces are counted: a `}` inside either would end a type early.
 NOISE = re.compile(r'"""[\s\S]*?"""|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|//[^\n]*|/\*[\s\S]*?\*/|#[^\n]*')
@@ -14,9 +15,12 @@ def _blank(source: str) -> str:
 
 # ponytail: a regex and a brace count, not a parser. A brace inside string interpolation, or a heredoc, can end a type
 # early. Upgrade path: the language's own parser (swift-syntax, nikic/php-parser), if attribution looks wrong in review.
-def ranges(source: str, decl: re.Pattern) -> list[tuple[str, int, int]]:
-    """(name, first line, last line) for each match of `decl` (group 1 = the name) followed by a `{…}` body."""
-    text, out = _blank(source), []
+def ranges(source: str, decl: re.Pattern, blank: Callable[[str], str] = _blank) -> list[tuple[str, int, int]]:
+    """(name, first line, last line) for each match of `decl` (group 1 = the name) followed by a `{…}` body.
+
+    `blank` is a language's own string-and-comment blanker, for one whose literals NOISE misreads (Rust).
+    """
+    text, out = blank(source), []
     for m in decl.finditer(text):
         start = text.find("{", m.end())
         if start < 0 or ";" in text[m.end():start]:

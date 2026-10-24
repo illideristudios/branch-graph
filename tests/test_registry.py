@@ -35,6 +35,9 @@ class RegistryTest(unittest.TestCase):
     def test_swift_ships(self):
         self.assertEqual(languages.selector(languages.load())("Sources/App/X.swift").name, "swift")
 
+    def test_rust_ships(self):
+        self.assertEqual(languages.selector(languages.load())("crates/app/src/lib.rs").name, "rust")
+
     def test_dropped_in_module_is_picked_up(self):
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "fake.py").write_text(FAKE)
